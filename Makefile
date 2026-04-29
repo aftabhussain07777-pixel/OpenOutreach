@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help logs test docker-test stop build up up-view install setup run admin view
+.PHONY: help logs test docker-test stop build up up-view install setup run admin view clean reset
 
 help:
 	@perl -nle'print $& if m{^[a-zA-Z_-]+:.*?## .*$$}' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
@@ -51,3 +51,29 @@ up-view: ## run the defined service in Docker Compose and open vinagre
 
 view: ## open vinagre to view the app
 	@sh -c 'vinagre vnc://127.0.0.1:5900 > /dev/null 2>&1 &'
+
+clean: ## clean up temporary files and cache
+	@echo "Cleaning temporary files and cache..."
+	@find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	@find . -type f -name "*.pyo" -delete 2>/dev/null || true
+	@find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+	@find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+	@rm -rf .cache 2>/dev/null || true
+	@rm -rf /tmp/openoutreach-diagnostics 2>/dev/null || true
+	@echo "Clean complete."
+
+reset: clean ## reset database and migrations (WARNING: deletes all data)
+	@echo "WARNING: This will delete all data in the database."
+	@read -p "Are you sure? [y/N] " -n 1 -r; \
+	echo; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		rm -f db.sqlite3; \
+		find linkedin/migrations -name "*.py" ! -name "__init__.py" -delete; \
+		find crm/migrations -name "*.py" ! -name "__init__.py" -delete; \
+		find chat/migrations -name "*.py" ! -name "__init__.py" -delete; \
+		rm -rf linkedin/migrations/__pycache__ crm/migrations/__pycache__ chat/migrations/__pycache__; \
+		echo "Database and migrations removed. Run 'make setup' to reinitialize."; \
+	else \
+		echo "Reset cancelled."; \
+	fi

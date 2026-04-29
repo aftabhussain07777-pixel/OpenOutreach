@@ -10,7 +10,7 @@ Now that lazy accessors live on Lead (`get_profile`, `get_embedding`), the inter
 
 - Remove `Lead.to_profile_dict()`, `_deal_to_profile_dict()`, `get_profile_dict_for_public_id()`
 - Update qualifier interfaces (`rank_profiles`, `explain`, `_load_profile_embeddings`) to take Lead objects
-- Update pool functions (`promote_to_ready`, `find_ready_candidate`, `find_freemium_candidate`) to pass Lead/Deal directly
+- Update pool functions (`promote_to_ready`, `find_ready_candidate`) to pass Lead/Deal directly
 - Update task handlers (`handle_check_pending`, `handle_follow_up`) to work with Deal objects
 - Update `get_leads_for_qualification()` and `get_qualified_profiles()` to return querysets or model lists
 - Remove `meta` dict packing (connect_attempts, backoff_hours live on Deal already)

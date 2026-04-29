@@ -177,8 +177,7 @@ def _recover_stale_running_tasks() -> int:
 def _seed_connect_tasks(session) -> None:
     """Ensure every campaign has a pending connect task."""
     for campaign in session.campaigns:
-        delay = CAMPAIGN_CONFIG["connect_delay_seconds"] if campaign.is_freemium else 0
-        enqueue_connect(campaign.pk, delay_seconds=delay)
+        enqueue_connect(campaign.pk, delay_seconds=0)
 
 
 def _seed_deal_tasks(session) -> None:

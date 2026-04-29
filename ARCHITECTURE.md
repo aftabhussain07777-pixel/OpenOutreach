@@ -9,11 +9,12 @@ Detailed module documentation for OpenOutreach. See `CLAUDE.md` for rules and qu
 ### `rundaemon` management command (`management/commands/rundaemon.py`)
 
 Startup sequence:
+
 1. **Configure logging** — DEBUG level, suppresses noisy third-party loggers (urllib3, httpx, pydantic_ai, openai, playwright, etc.).
 2. **Ensure DB** — `migrate --no-input` + `setup_crm` (idempotent).
 3. **Onboard** — checks `missing_keys()`; if incomplete: uses `--onboard <config.json>` (non-interactive), falls back to interactive wizard (TTY), or exits with clear error (no TTY).
 4. **Validate** — `LLM_API_KEY`, active `LinkedInProfile`, at least one campaign.
-5. **Session** — `get_or_create_session(profile)`, sets default campaign (first non-freemium).
+5. **Session** — `get_or_create_session(profile)`, sets default campaign (first campaign).
 6. **Newsletter** — GDPR override + `ensure_newsletter_subscription()` (marker-guarded, runs once).
 7. **Run** — `run_daemon(session)`.
 
@@ -28,6 +29,7 @@ Docker `start` script handles only Xvfb/VNC setup, then `exec python manage.py r
 ## Onboarding (`onboarding.py`)
 
 `OnboardConfig` — pure dataclass with all onboarding fields. Two constructors:
+
 - `OnboardConfig.from_json(path)` — from JSON file (cloud / non-interactive).
 - `collect_from_wizard()` — interactive questionary wizard (needs TTY), only asks for `missing_keys()`.
 
@@ -54,13 +56,13 @@ The daemon calls `reconcile()` whenever the queue has no ready task — startup 
 
 Three task types (handlers in `linkedin/tasks/`, signature: `handle_*(task, session, qualifiers)`):
 
-1. **`handle_connect`** — Unified via `ConnectStrategy` dataclass. Regular: `find_candidate()` from `pools.py`; freemium: `find_freemium_candidate()`. Unreachable detection after `MAX_CONNECT_ATTEMPTS` (3).
+1. **`handle_connect`** — Unified via `ConnectStrategy` dataclass. Uses `find_candidate()` from `pools.py`. Unreachable detection after `MAX_CONNECT_ATTEMPTS` (3).
 2. **`handle_check_pending`** — Per-profile. Exponential backoff with jitter. On acceptance → enqueues `follow_up`.
 3. **`handle_follow_up`** — Per-profile. Calls `run_follow_up_agent()` which returns a `FollowUpDecision` (structured output: `send_message`/`mark_completed`/`wait`). Handler executes the decision deterministically.
 
 ## Qualification ML Pipeline
 
-GPR (sklearn, ConstantKernel * RBF) inside Pipeline(StandardScaler, GPR) with BALD active learning:
+GPR (sklearn, ConstantKernel \* RBF) inside Pipeline(StandardScaler, GPR) with BALD active learning:
 
 1. **Balance-driven selection** — n_negatives > n_positives → exploit (highest P); otherwise → explore (highest BALD).
 2. **LLM decision** — All decisions via LLM (`qualify_lead.j2`). GP only for candidate selection and confidence gate.
@@ -79,7 +81,7 @@ Three apps in `INSTALLED_APPS`:
 ## CRM Data Model
 
 - **SiteConfig** (`linkedin/models.py`) — Singleton (pk=1). `llm_provider` (TextChoices: openai/anthropic/google/groq/mistral/cohere/openai_compatible), `llm_api_key`, `ai_model`, `llm_api_base`. Accessed via `SiteConfig.load()`; `linkedin/llm.py:get_llm_model()` is the single factory that turns it into a `pydantic_ai.models.Model`.
-- **Campaign** (`linkedin/models.py`) — `name` (unique), `users` (M2M to User), `product_docs`, `campaign_objective`, `booking_link`, `is_freemium`, `action_fraction`, `seed_public_ids` (JSONField).
+- **Campaign** (`linkedin/models.py`) — `name` (unique), `users` (M2M to User), `product_docs`, `campaign_objective`, `booking_link`, `seed_public_ids` (JSONField).
 - **LinkedInProfile** (`linkedin/models.py`) — 1:1 with User. `self_lead` FK to Lead (nullable, set on first self-profile discovery). Credentials, rate limits (`connect_daily_limit`, `connect_weekly_limit`, `follow_up_daily_limit`). Methods: `can_execute`/`record_action`/`mark_exhausted`. In-memory `_exhausted` dict for daily rate limit caching.
 - **SearchKeyword** (`linkedin/models.py`) — FK to Campaign. `keyword`, `used`, `used_at`. Unique on `(campaign, keyword)`.
 - **ActionLog** (`linkedin/models.py`) — FK to LinkedInProfile + Campaign. `action_type` (connect/follow_up), `created_at`. Composite index on `(linkedin_profile, action_type, created_at)`.
@@ -90,7 +92,7 @@ Three apps in `INSTALLED_APPS`:
 
 ## Key Modules
 
-- **`daemon.py`** — Worker loop with active-hours guard (`ENABLE_ACTIVE_HOURS` flag, `seconds_until_active()`), `_build_qualifiers()`, freemium import, `_CloudPromoRotator`. Calls `scheduler.reconcile()` when the queue has no ready task.
+- **`daemon.py`** — Worker loop with active-hours guard (`ENABLE_ACTIVE_HOURS` flag, `seconds_until_active()`), `_build_qualifiers()`, `_CloudPromoRotator`. Calls `scheduler.reconcile()` when the queue has no ready task.
 - **`diagnostics.py`** — `failure_diagnostics()` context manager, `capture_failure()` saves page HTML/screenshot/traceback to `/tmp/openoutreach-diagnostics/`.
 - **`tasks/scheduler.py`** — Single owner of Task row creation. Low-level `enqueue_*`, state-transition hook `on_deal_state_entered`, and `reconcile()`.
 - **`tasks/connect.py`** — `handle_connect`, `ConnectStrategy`.
@@ -101,7 +103,6 @@ Three apps in `INSTALLED_APPS`:
 - **`pipeline/search_keywords.py`** — `generate_search_keywords()` via LLM.
 - **`pipeline/ready_pool.py`** — GP confidence gate, `promote_to_ready()`.
 - **`pipeline/pools.py`** — Composable generators: `search_source` → `qualify_source` → `ready_source`.
-- **`pipeline/freemium_pool.py`** — Seed priority + undiscovered pool, ranked by qualifier.
 - **`ml/qualifier.py`** — `Qualifier` protocol, `BayesianQualifier`, `KitQualifier`, `qualify_with_llm()`.
 - **`ml/embeddings.py`** — FastEmbed utilities, `embed_text()`, `embed_texts()`.
 - **`ml/profile_text.py`** — `build_profile_text()`.
@@ -111,7 +112,7 @@ Three apps in `INSTALLED_APPS`:
 - **`browser/login.py`** — `start_browser_session()` — browser launch + LinkedIn login.
 - **`browser/nav.py`** — Navigation, auto-discovery, `goto_page()`.
 - **`db/leads.py`** — Lead CRUD, `get_leads_for_qualification()`, `disqualify_lead()`, `_cache_urn_from_profile()`.
-- **`db/deals.py`** — Deal/state ops, `set_profile_state()`, `increment_connect_attempts()`, `create_freemium_deal()`.
+- **`db/deals.py`** — Deal/state ops, `set_profile_state()`, `increment_connect_attempts()`, `create_disqualified_deal()`.
 - **`db/chat.py`** — `sync_conversation()`, `_sync_from_api()`, folds newly-synced messages into `Deal.chat_summary` via `update_chat_summary`.
 - **`db/summaries.py`** — Single mem0-style LLM boundary. `materialize_profile_summary_if_missing(deal, session)` fires on first follow-up touch (one Voyager re-scrape per `(lead, campaign)` lifetime); `update_chat_summary(deal, new_messages)` folds newly-synced ChatMessages incrementally via `reconcile_facts`, which routes new facts through mem0's UPDATE prompt to apply ADD/UPDATE/DELETE/NONE events (mirrors `mem0/memory/main.py::Memory._add_to_vector_store` lines 594-700, with vector-store ops replaced by an in-memory dict because `Deal.chat_summary` is a flat list). `_format_messages_for_extraction` filters to incoming messages only, so `chat_summary` holds facts about the lead and a one-sided outgoing burst is a noop. `extract_facts(text, context)` runs `pydantic_ai.Agent(get_llm_model(), output_type=FactList)` against the vendored `_FACT_EXTRACTION_PROMPT`. mem0's `DEFAULT_UPDATE_MEMORY_PROMPT` and `get_update_memory_messages` live under `linkedin/vendor/mem0/configs/prompts.py` (mirrors upstream path so future syncs are a clean diff; pinned commit recorded in the file header).
 - **`url_utils.py`** — `url_to_public_id()`, `public_id_to_url()` — LinkedIn URL ↔ public identifier conversion. Pure utility, no DB dependency.
@@ -127,14 +128,12 @@ Three apps in `INSTALLED_APPS`:
 - **`api/messaging/send.py`** — Send messages via Voyager messaging API.
 - **`api/messaging/conversations.py`** — Fetch conversations/messages.
 - **`api/messaging/utils.py`** — Shared helpers: `encode_urn()`, `check_response()`.
-- **`setup/freemium.py`** — `import_freemium_campaign()`, `seed_profiles()`.
 - **`setup/gdpr.py`** — `apply_gdpr_newsletter_override()`.
 - **`setup/self_profile.py`** — `discover_self_profile()` — fetches self profile via Voyager API, sets `linkedin_profile.self_lead`.
 - **`setup/seeds.py`** — User-provided seed profiles: parse URLs, create Leads + QUALIFIED Deals.
 - **`management/setup_crm.py`** — Idempotent CRM bootstrap (Site creation).
 - **`admin.py`** — Django Admin: SiteConfig, Campaign, LinkedInProfile, SearchKeyword, ActionLog, Task, ChatMessage.
 - **`django_settings.py`** — Django settings (SQLite at `data/db.sqlite3`). Apps: crm, chat, linkedin.
-
 
 ## Configuration
 

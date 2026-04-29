@@ -70,10 +70,7 @@ class Command(BaseCommand):
         if not session.campaigns:
             logger.error("No campaigns found for this user.")
             sys.exit(1)
-        campaign = next(
-            (c for c in session.campaigns if not c.is_freemium), None,
-        ) or session.campaigns[0]
-        session.campaign = campaign
+        session.campaign = session.campaigns[0]
 
         return session
 

@@ -19,7 +19,7 @@ The system uses Django with a single SQLite database at `db.sqlite3` (project ro
 
 - **Lead** (`crm/models/lead.py`) — One per LinkedIn profile URL. Stores `first_name`, `last_name`, `company_name`, `linkedin_url` (LinkedIn URL, unique), `description` (full parsed profile JSON), `embedding` (BinaryField storing 384-dim fastembed vector as bytes, with `embedding_array` numpy property accessor). `disqualified` (bool) marks permanent account-level exclusion (self-profile, unreachable profiles). `creation_date`, `update_date`.
 - **Deal** (`crm/models/deal.py`) — Tracks pipeline state. One Deal per Lead per campaign (campaign-scoped via FK). `state` = CharField (ProfileState choices). `outcome` = CharField (Outcome: converted/not_interested/wrong_fit/no_budget/has_solution/bad_timing/unresponsive/unknown). `reason` = qualification reason (free text). `connect_attempts` = retry count. `backoff_hours` = check_pending backoff. `creation_date`, `update_date`.
-- **Campaign** (`linkedin/models.py`) — `name` (unique), `users` (M2M to User for membership), `product_docs`, `campaign_objective`, `booking_link`, `is_freemium` (bool), `action_fraction` (float), `seed_public_ids` (JSONField).
+- **Campaign** (`linkedin/models.py`) — `name` (unique), `users` (M2M to User for membership), `product_docs`, `campaign_objective`, `booking_link`, `seed_public_ids` (JSONField).
 - **LinkedInProfile** (`linkedin/models.py`) — 1:1 with `auth.User`. Stores credentials, rate limits, newsletter preference. Rate-limiting methods: `can_execute()`, `record_action()`, `mark_exhausted()`.
 - **SearchKeyword** (`linkedin/models.py`) — FK to Campaign. Stores `keyword`, `used` (bool), `used_at`.
 - **ActionLog** (`linkedin/models.py`) — FK to LinkedInProfile + Campaign. Tracks `connect` and `follow_up` actions for rate limiting.
@@ -49,32 +49,32 @@ Tasks are ordered by `scheduled_at` timestamp. The worker loop pops the oldest d
 
 Three task types (all handler functions in `linkedin/tasks/`, signature: `handle_*(task, session, qualifiers)`):
 
-| Task Type | Handler | Scope | Description |
-|-----------|---------|-------|-------------|
-| `connect` | `handle_connect` | per-campaign | ML-ranks and sends connection requests |
-| `check_pending` | `handle_check_pending` | per-profile | Checks one PENDING profile for acceptance |
-| `follow_up` | `handle_follow_up` | per-profile | Runs agentic follow-up conversation |
+| Task Type       | Handler                | Scope        | Description                               |
+| --------------- | ---------------------- | ------------ | ----------------------------------------- |
+| `connect`       | `handle_connect`       | per-campaign | ML-ranks and sends connection requests    |
+| `check_pending` | `handle_check_pending` | per-profile  | Checks one PENDING profile for acceptance |
+| `follow_up`     | `handle_follow_up`     | per-profile  | Runs agentic follow-up conversation       |
 
 Daily and weekly rate limiters independently cap totals via `LinkedInProfile` methods (DB-backed via `ActionLog`).
-
-Freemium campaigns use the same `connect` task type; the `ConnectStrategy` dataclass (built by `strategy_for()`) handles differences (candidate sourcing, delay, pre-connect hooks) based on `campaign.is_freemium`.
 
 ## Task Handlers (`linkedin/tasks/`)
 
 ### `connect.py` — handle_connect
+
 - Unified handler for all campaigns via `ConnectStrategy` dataclass.
-- Regular campaigns: `find_candidate()` from `pipeline/pools.py` (composable generators: `ready_source` → `qualify_source` → `search_source`).
-- Freemium campaigns: `find_freemium_candidate()` from `pipeline/freemium_pool.py` with just-in-time Deal creation.
-- Self-reschedules the connect loop via `strategy.compute_delay(elapsed)` calling `scheduler.enqueue_connect()`.
+- Uses `find_candidate()` from `pipeline/pools.py` (composable generators: `ready_source` → `qualify_source` → `search_source`).
+- Self-reschedules the connect loop via `strategy.delay` calling `scheduler.enqueue_connect()`.
 - Rate-limited by `LinkedInProfile.can_execute()` / `record_action()`.
 - Next deal-level task (follow_up / check_pending) is enqueued automatically by the scheduler hook when the handler calls `set_profile_state(...)`.
 
 ### `check_pending.py` — handle_check_pending
+
 - Checks one PENDING profile via `get_connection_status()`.
 - Uses exponential backoff with multiplicative jitter per profile, stored in `deal.backoff_hours`.
 - On acceptance → enqueues `follow_up` task.
 
 ### `follow_up.py` — handle_follow_up
+
 - Runs the agentic follow-up via `run_follow_up_agent()` from `agents/follow_up.py`. Full docs: [`docs/follow_up_agent.md`](docs/follow_up_agent.md).
 - Agent returns a `FollowUpDecision` (structured output: `send_message`/`mark_completed`/`wait`). Handler executes it deterministically.
 - `send_message`: sends via `send_raw_message()` (popup → direct thread → Voyager API fallback chain), records ActionLog, re-enqueues.
@@ -90,8 +90,7 @@ Candidate sourcing, qualification, and pool management:
 - **`search.py`** — `run_search()`: picks next unused keyword (generating fresh ones via LLM if exhausted), runs LinkedIn People search.
 - **`search_keywords.py`** — `generate_search_keywords()`: calls LLM to generate LinkedIn People search queries from campaign context.
 - **`ready_pool.py`** — GP confidence gate between QUALIFIED and READY_TO_CONNECT. `promote_to_ready()` promotes profiles above `min_ready_to_connect_prob` threshold.
-- **`pools.py`** — Composable generators for regular campaigns. `find_candidate()` → `ready_source()` → `qualify_source()` → `search_source()`.
-- **`freemium_pool.py`** — `find_freemium_candidate()`: queries `Lead` for embedded leads without a Deal in the campaign.
+- **`pools.py`** — Composable generators. `find_candidate()` → `ready_source()` → `qualify_source()` → `search_source()`.
 
 ## API Client (`linkedin/api/`)
 
@@ -126,7 +125,7 @@ Profile CRUD backed by Django models:
 
 - **`urls.py`** — `url_to_public_id()`, `public_id_to_url()`.
 - **`leads.py`** — Lead CRUD: `lead_exists()`, `create_enriched_lead()`, `promote_lead_to_deal()`, `get_leads_for_qualification()`, `disqualify_lead()`, `lead_profile_by_id()`.
-- **`deals.py`** — Deal/state operations: `set_profile_state()`, `get_qualified_profiles()`, `get_ready_to_connect_profiles()`, `get_profile_dict_for_public_id()`, `increment_connect_attempts()`, `create_disqualified_deal()`, `create_freemium_deal()`.
+- **`deals.py`** — Deal/state operations: `set_profile_state()`, `get_qualified_profiles()`, `get_ready_to_connect_profiles()`, `get_profile_dict_for_public_id()`, `increment_connect_attempts()`, `create_disqualified_deal()`.
 - **`enrichment.py`** — Lazy enrichment/embedding: `ensure_lead_enriched()`, `ensure_profile_embedded()`, `load_embedding()`.
 - **`chat.py`** — `sync_conversation()`: fetches messages from Voyager API, upserts `ChatMessage` rows by `linkedin_urn`, folds new messages into `Deal.chat_summary` via `update_chat_summary()`. `save_chat_message()` for manual inserts.
 - **`summaries.py`** — Lazy mem0-style fact summaries. `materialize_profile_summary_if_missing()`: one-time profile fact extraction. `update_chat_summary()`: incremental chat fact extraction + `reconcile_facts()` (ADD/UPDATE/DELETE/NONE events). See [`docs/follow_up_agent.md`](docs/follow_up_agent.md) for details.
@@ -152,7 +151,7 @@ Profile CRUD backed by Django models:
 
 ### `qualifier.py` — KitQualifier
 
-- Standalone qualifier for freemium campaigns. Wraps a pre-trained sklearn-compatible model as a black-box scorer. No inner BayesianQualifier.
+- Standalone qualifier backed by a pre-trained sklearn-compatible model. Wraps a Pipeline(StandardScaler, GPR) loaded from a campaign kit.
 - `rank_profiles(profiles, session)` sorts by raw score (descending).
 
 ### `embeddings.py`
@@ -167,11 +166,12 @@ Profile CRUD backed by Django models:
 
 ### `hub.py`
 
-- `fetch_kit()` — Downloads freemium campaign kit from HuggingFace (`eracle/campaign-kit`), loads `config.json` + `model.joblib`. Cached after first attempt.
+- `fetch_kit()` — Downloads campaign kit from HuggingFace (`eracle/campaign-kit`), loads `config.json` + `model.joblib`. Cached after first attempt.
 
 ## Exceptions (`linkedin/exceptions.py`)
 
 Custom exceptions:
+
 - `AuthenticationError` — 401 / login failure
 - `TerminalStateError` — profile is in a terminal state, must be skipped
 - `SkipProfile` — profile should be skipped for other reasons

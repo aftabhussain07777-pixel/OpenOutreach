@@ -62,8 +62,6 @@ class Campaign(models.Model):
     product_docs = models.TextField(blank=True)
     campaign_objective = models.TextField(blank=True)
     booking_link = models.URLField(max_length=500, blank=True)
-    is_freemium = models.BooleanField(default=False)
-    action_fraction = models.FloatField(default=0.2)
     seed_public_ids = models.JSONField(default=list, blank=True)
     model_blob = models.BinaryField(null=True, blank=True)
 

@@ -49,10 +49,10 @@ per profile, capped at `enrich_max_per_page` (default 10) per discovered page.
 Leads with embeddings but no Deal are the qualification pool. Candidate
 selection depends on label balance:
 
-| Condition | Strategy | Method |
-|-----------|----------|--------|
+| Condition                   | Strategy                                         | Method                      |
+| --------------------------- | ------------------------------------------------ | --------------------------- |
 | `n_negatives > n_positives` | **Exploit** — pick highest predicted probability | `qualifier.predict_probs()` |
-| Otherwise | **Explore** — pick highest BALD score | `qualifier.compute_bald()` |
+| Otherwise                   | **Explore** — pick highest BALD score            | `qualifier.compute_bald()`  |
 
 All qualification decisions go through the LLM via `qualify_lead.j2` prompt.
 The GP model is used only for candidate selection strategy, not for auto-decisions.
@@ -86,6 +86,7 @@ The connect handler picks the top READY_TO_CONNECT profile from the pool
 (`pipeline/pools.py:find_candidate()` → `pipeline/ready_pool.py:find_ready_candidate()`).
 
 If the pool is empty, the **backfill chain** runs via composable generators:
+
 1. `ready_source()` — check if any QUALIFIED profiles pass the GP gate via `promote_to_ready()`
 2. `qualify_source()` — qualify the next unlabeled profile via `run_qualification()`
 3. `search_source()` — discover new profiles via `run_search()`
@@ -125,11 +126,11 @@ invocation syncs the conversation, builds context from profile/chat fact
 summaries plus a verbatim message window, and asks the LLM for a structured
 `FollowUpDecision`:
 
-| Action | Effect |
-|--------|--------|
-| `send_message` | Send DM (3 fallback strategies), record action, re-enqueue |
-| `wait` | Re-enqueue without sending (check back in `follow_up_hours`) |
-| `mark_completed` | Close the Deal (booked, declined, or gone cold) |
+| Action           | Effect                                                       |
+| ---------------- | ------------------------------------------------------------ |
+| `send_message`   | Send DM (3 fallback strategies), record action, re-enqueue   |
+| `wait`           | Re-enqueue without sending (check back in `follow_up_hours`) |
+| `mark_completed` | Close the Deal (booked, declined, or gone cold)              |
 
 The loop continues until the agent returns `mark_completed`. Default re-check
 interval is 72 hours if the agent doesn't specify one. Rate-limited to
@@ -181,11 +182,3 @@ interval is 72 hours if the agent doesn't specify one. Rate-limited to
                           │   FAILED    │  Error at any state
                           └─────────────┘
 ```
-
-## Freemium Campaigns
-
-Freemium campaigns skip qualification, READY_TO_CONNECT, and search entirely.
-They query `Lead` for any embedded lead without a Deal in their
-campaign (excluding permanently disqualified leads), ranked by `KitQualifier`.
-Profiles go straight to connect, with delay scaled by `action_fraction` to
-maintain a target ratio of freemium vs regular connections.

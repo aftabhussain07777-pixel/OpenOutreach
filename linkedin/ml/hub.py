@@ -1,5 +1,5 @@
 # linkedin/ml/hub.py
-"""Campaign kit: download from HuggingFace, lazy-load, freemium campaign import."""
+"""Campaign kit: download from HuggingFace, lazy-load."""
 from __future__ import annotations
 
 import json
@@ -41,10 +41,10 @@ def download_kit(revision: str = "v2") -> Optional[Path]:
         )
         # Remove HF download metadata cache — not needed after download
         shutil.rmtree(kit_dir / ".cache", ignore_errors=True)
-        logger.debug("[Freemium] Kit downloaded to %s", path)
+        logger.debug("Kit downloaded to %s", path)
         return Path(path)
     except Exception:
-        logger.debug("[Freemium] Kit download failed", exc_info=True)
+        logger.debug("Kit download failed", exc_info=True)
         return None
 
 
@@ -54,17 +54,17 @@ def load_kit_config(kit_dir: Path) -> Optional[dict]:
         config_path = kit_dir / "config.json"
         data = json.loads(config_path.read_text())
 
-        required = ("action_fraction", "product_docs", "campaign_objective",
+        required = ("product_docs", "campaign_objective",
                      "booking_link")
         for key in required:
             if key not in data:
-                logger.debug("[Freemium] Kit config missing key: %s", key)
+                logger.debug("Kit config missing key: %s", key)
                 return None
 
-        logger.debug("[Freemium] Kit config loaded (action_fraction=%.2f)", data["action_fraction"])
+        logger.debug("Kit config loaded")
         return data
     except Exception:
-        logger.debug("[Freemium] Kit config load failed", exc_info=True)
+        logger.debug("Kit config load failed", exc_info=True)
         return None
 
 
@@ -80,13 +80,13 @@ def load_kit_model(kit_dir: Path):
         model = joblib.load(kit_dir / "model.joblib")
 
         if not hasattr(model, "predict"):
-            logger.debug("[Freemium] Kit model has no predict() method")
+            logger.debug("Kit model has no predict() method")
             return None
 
-        logger.debug("[Freemium] Kit model loaded (%s)", type(model).__name__)
+        logger.debug("Kit model loaded (%s)", type(model).__name__)
         return model
     except Exception:
-        logger.debug("[Freemium] Kit model load failed", exc_info=True)
+        logger.debug("Kit model load failed", exc_info=True)
         return None
 
 

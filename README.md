@@ -48,11 +48,11 @@ Perfect for founders, sales teams, and agencies who want powerful automation **w
 
 ## 📋 What You Need
 
-| # | What | Example |
-|---|------|---------|
-| 1 | **A LinkedIn account** | Your email + password |
-| 2 | **An LLM API key** | OpenAI, Anthropic, or any OpenAI-compatible endpoint |
-| 3 | **A product description + target market** | "We sell cloud cost optimization for DevOps teams at mid-market SaaS companies" |
+| #   | What                                      | Example                                                                         |
+| --- | ----------------------------------------- | ------------------------------------------------------------------------------- |
+| 1   | **A LinkedIn account**                    | Your email + password                                                           |
+| 2   | **An LLM API key**                        | OpenAI, Anthropic, or any OpenAI-compatible endpoint                            |
+| 3   | **A product description + target market** | "We sell cloud cost optimization for DevOps teams at mid-market SaaS companies" |
 
 That's it. No spreadsheets, no lead databases, no scraping setup.
 
@@ -90,13 +90,13 @@ openoutreach logs                                    # watch leads roll in
 openoutreach down                                    # download your updated DB, destroy the server
 ```
 
-| | Self-Hosted (Free) | Cloud (Managed) |
-|---|---|---|
-| AI lead discovery + Bayesian ML | Yes | Yes |
-| AI follow-up agent | Yes | Yes |
-| Data ownership | Full (your DB) | Full (your DB) |
-| Docker + VPN setup | You manage | We manage |
-| Setup time | 30-60 min | ~1 min |
+|                                 | Self-Hosted (Free) | Cloud (Managed) |
+| ------------------------------- | ------------------ | --------------- |
+| AI lead discovery + Bayesian ML | Yes                | Yes             |
+| AI follow-up agent              | Yes                | Yes             |
+| Data ownership                  | Full (your DB)     | Full (your DB)  |
+| Docker + VPN setup              | You manage         | We manage       |
+| Setup time                      | 30-60 min          | ~1 min          |
 
 **Your data stays yours.** `openoutreach up` uploads your local `db.sqlite3` to a dedicated droplet; `openoutreach down` brings it back with every new lead, message, and campaign update before the server is destroyed. Switch between self-hosted and Cloud anytime without losing anything.
 
@@ -120,6 +120,7 @@ For contributors or if you prefer running directly on your machine.
 - [Python](https://www.python.org/downloads/) (3.12+)
 
 ### 1. Clone & Set Up
+
 ```bash
 git clone https://github.com/eracle/OpenOutreach.git
 cd OpenOutreach
@@ -133,11 +134,13 @@ make setup
 ```bash
 make run
 ```
+
 The interactive onboarding will prompt for LinkedIn credentials, LLM API key, and campaign details on first run. Fully resumable — stop/restart anytime without losing progress.
 
 ### 3. View Your Data (CRM Admin)
 
 OpenOutreach includes a full CRM web interface powered by DjangoCRM:
+
 ```bash
 # Create an admin account (first time only)
 python manage.py createsuperuser
@@ -145,23 +148,26 @@ python manage.py createsuperuser
 # Start the web server
 make admin
 ```
+
 Then open:
+
 - **Django Admin:** http://localhost:8000/admin/
 
 ---
+
 ## ✨ Features
 
-| Feature                            | Description                                                                                                          |
-|------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| 🧠 **Autonomous Lead Discovery**   | No contact lists needed — LLM generates search queries from your product description and campaign objective.         |
-| 🎯 **Bayesian Active Learning**    | Gaussian Process model on profile embeddings learns your ideal customer via explore/exploit, selecting the most informative candidates for LLM qualification. |
-| 🤖 **Stealth Browser Automation**  | Playwright + stealth plugins mimic real user behavior for undetectable interactions.                                 |
-| 🛡️ **Voyager API Scraping**       | Uses LinkedIn's internal API for accurate, structured profile data (no fragile HTML parsing).                        |
-| 🔄 **Stateful Pipeline**          | Tracks profile states (`QUALIFIED` → `READY_TO_CONNECT` → `PENDING` → `CONNECTED` → `COMPLETED`) in a local DB — fully resumable. |
-| ⏱️ **Smart Rate Limiting**        | Configurable daily/weekly limits per action type, respects LinkedIn's own limits automatically.                      |
-| 💾 **Built-in CRM**               | Full data ownership via DjangoCRM with Django Admin UI — browse Leads, Contacts, Companies, and Deals.              |
-| 🐳 **One-Command Deployment**      | Dockerized setup with interactive onboarding and VNC browser view (`localhost:5900`).                                |
-| ✍️ **AI-Powered Messaging**        | Agentic multi-turn follow-up conversations — the AI agent reads history, sends messages, and schedules future follow-ups. |
+| Feature                           | Description                                                                                                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🧠 **Autonomous Lead Discovery**  | No contact lists needed — LLM generates search queries from your product description and campaign objective.                                                  |
+| 🎯 **Bayesian Active Learning**   | Gaussian Process model on profile embeddings learns your ideal customer via explore/exploit, selecting the most informative candidates for LLM qualification. |
+| 🤖 **Stealth Browser Automation** | Playwright + stealth plugins mimic real user behavior for undetectable interactions.                                                                          |
+| 🛡️ **Voyager API Scraping**       | Uses LinkedIn's internal API for accurate, structured profile data (no fragile HTML parsing).                                                                 |
+| 🔄 **Stateful Pipeline**          | Tracks profile states (`QUALIFIED` → `READY_TO_CONNECT` → `PENDING` → `CONNECTED` → `COMPLETED`) in a local DB — fully resumable.                             |
+| ⏱️ **Smart Rate Limiting**        | Configurable daily/weekly limits per action type, respects LinkedIn's own limits automatically.                                                               |
+| 💾 **Built-in CRM**               | Full data ownership via DjangoCRM with Django Admin UI — browse Leads, Contacts, Companies, and Deals.                                                        |
+| 🐳 **One-Command Deployment**     | Dockerized setup with interactive onboarding and VNC browser view (`localhost:5900`).                                                                         |
+| ✍️ **AI-Powered Messaging**       | Agentic multi-turn follow-up conversations — the AI agent reads history, sends messages, and schedules future follow-ups.                                     |
 
 ---
 
@@ -169,11 +175,11 @@ Then open:
 
 The daemon runs a continuous **task queue** backed by a persistent `Task` model. Three task types self-schedule follow-on work:
 
-| Task Type | What it does |
-|-----------|-------------|
-| **Connect** | Ranks qualified profiles by GP model probability, sends connection requests (daily + weekly limits). Triggers qualification and search via composable generators when the pool is empty. |
-| **Check Pending** | Checks if a pending request was accepted (exponential backoff per profile) |
-| **Follow Up** | Runs an AI agent that manages multi-turn conversations with connected profiles |
+| Task Type         | What it does                                                                                                                                                                             |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Connect**       | Ranks qualified profiles by GP model probability, sends connection requests (daily + weekly limits). Triggers qualification and search via composable generators when the pool is empty. |
+| **Check Pending** | Checks if a pending request was accepted (exponential backoff per profile)                                                                                                               |
+| **Follow Up**     | Runs an AI agent that manages multi-turn conversations with connected profiles                                                                                                           |
 
 **The qualification loop in detail:**
 
@@ -213,7 +219,7 @@ Configure rate limits and behavior via Django Admin (LinkedInProfile + Campaign 
 │   ├── models.py                    # Django models (Campaign, LinkedInProfile, Task, etc.)
 │   ├── onboarding.py                # Interactive onboarding (campaign, credentials, LLM config)
 │   ├── pipeline/                    # Candidate sourcing, qualification, pool management
-│   ├── setup/                       # GDPR, self-profile, freemium campaign setup
+│   ├── setup/                       # GDPR, self-profile setup
 │   └── tasks/                       # Task handlers (connect, check_pending, follow_up)
 ├── manage.py                         # Django management (no args defaults to rundaemon)
 ├── local.yml                        # Docker Compose
@@ -265,12 +271,12 @@ This project is built in spare time to provide powerful, **free** open-source gr
 
 <br/>
 
-| Tier        | Monthly | Benefits                                                              |
-|-------------|---------|-----------------------------------------------------------------------|
+| Tier         | Monthly | Benefits                                                              |
+| ------------ | ------- | --------------------------------------------------------------------- |
 | ☕ Supporter | $5      | Huge thanks + name in README supporters list                          |
-| 🚀 Booster  | $25     | All above + priority feature requests + early access to new campaigns |
-| 🦸 Hero     | $100    | All above + personal 1-on-1 support + influence roadmap               |
-| 💎 Legend   | $500+   | All above + custom feature development + shoutout in releases         |
+| 🚀 Booster   | $25     | All above + priority feature requests + early access to new campaigns |
+| 🦸 Hero      | $100    | All above + personal 1-on-1 support + influence roadmap               |
+| 💎 Legend    | $500+   | All above + custom feature development + shoutout in releases         |
 
 </div>
 

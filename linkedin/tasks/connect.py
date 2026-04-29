@@ -1,7 +1,5 @@
 # linkedin/tasks/connect.py
 """Connect task — pulls one candidate, connects, self-reschedules.
-
-Works for both regular and freemium campaigns via ConnectStrategy.
 """
 from __future__ import annotations
 
@@ -27,42 +25,19 @@ MAX_CONNECT_ATTEMPTS = 3
 @dataclass
 class ConnectStrategy:
     find_candidate: Callable
-    pre_connect: Callable | None
     delay: float
-    action_fraction: float  # 1.0 = always fire at base delay
     qualifier: object
-
-    def compute_delay(self, elapsed: float) -> float:
-        """Delay until next connect, scaled by elapsed execution time for freemium campaigns."""
-        if self.action_fraction >= 1.0:
-            return self.delay
-        return max(self.delay, elapsed * (1 - self.action_fraction) / self.action_fraction)
 
 
 def strategy_for(campaign, qualifiers):
     """Build the right ConnectStrategy based on campaign type."""
-    qualifier = qualifiers.get(campaign.pk)
-
-    if campaign.is_freemium:
-        from linkedin.db.deals import create_freemium_deal
-        from linkedin.pipeline.freemium_pool import find_freemium_candidate
-
-        fraction = campaign.action_fraction
-        return ConnectStrategy(
-            find_candidate=lambda s: find_freemium_candidate(s, qualifier),
-            pre_connect=lambda s, pid: create_freemium_deal(s, pid),
-            delay=CAMPAIGN_CONFIG["connect_delay_seconds"],
-            action_fraction=fraction,
-            qualifier=qualifier,
-        )
-
     from linkedin.pipeline.pools import find_candidate
+
+    qualifier = qualifiers.get(campaign.pk)
 
     return ConnectStrategy(
         find_candidate=lambda s: find_candidate(s, qualifier),
-        pre_connect=None,
         delay=CAMPAIGN_CONFIG["connect_delay_seconds"],
-        action_fraction=1.0,
         qualifier=qualifier,
     )
 
@@ -78,8 +53,7 @@ def handle_connect(task, session, qualifiers):
     strategy = strategy_for(campaign, qualifiers)
 
     def _reschedule():
-        elapsed = (timezone.now() - task.started_at).total_seconds() if task.started_at else 0
-        enqueue_connect(campaign_id, delay_seconds=strategy.compute_delay(elapsed))
+        enqueue_connect(campaign_id, delay_seconds=strategy.delay)
 
     # --- Rate limit check ---
     if not session.linkedin_profile.can_execute(ActionLog.ActionType.CONNECT):
@@ -94,10 +68,6 @@ def handle_connect(task, session, qualifiers):
 
     public_id = candidate["public_identifier"]
     profile = candidate.get("profile") or candidate
-
-    # Freemium campaigns need a Deal before set_profile_state
-    if strategy.pre_connect:
-        strategy.pre_connect(session, public_id)
 
     from crm.models import Deal
 
