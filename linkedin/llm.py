@@ -4,8 +4,7 @@ Single boundary for LLM construction. Call sites import `get_llm_model()` and
 hand the result to `pydantic_ai.Agent(...)`. Provider-specific routing lives
 here so the rest of the codebase stays provider-agnostic.
 
-Importing this module also applies ``nest_asyncio`` once. pydantic-ai's
-``Agent.run_sync`` wraps an async ``run`` in ``loop.run_until_complete``;
+pydantic-ai's ``Agent.run_sync`` wraps an async ``run`` in ``loop.run_until_complete``;
 something in its internals (anyio task group / portal) leaves the daemon
 thread's running-loop slot populated across calls, which trips the
 re-entrancy guard in ``BaseEventLoop._check_running`` on every subsequent
@@ -14,12 +13,23 @@ official pydantic-ai troubleshooting recipe — same one used for Jupyter /
 Colab / Marimo — is ``nest_asyncio.apply()``, which patches the loop to
 allow nested ``run_until_complete``. See:
 https://pydantic.dev/docs/ai/overview/troubleshooting/
+
+We apply nest_asyncio lazily (on first LLM model access) to avoid conflicts
+with Playwright's sync API, which raises an error if called inside an asyncio loop.
 """
 from __future__ import annotations
 
 import nest_asyncio
 
-nest_asyncio.apply()
+_nest_asyncio_applied = False
+
+
+def _ensure_nest_asyncio():
+    """Apply nest_asyncio once if not already applied."""
+    global _nest_asyncio_applied
+    if not _nest_asyncio_applied:
+        nest_asyncio.apply()
+        _nest_asyncio_applied = True
 
 
 # Override the SDK default of 2. Each retry uses the SDK's built-in jittered
@@ -109,6 +119,7 @@ def _validated_site_config():
 
 def get_llm_model():
     """Return a configured pydantic-ai `Model` for the current `SiteConfig`."""
+    _ensure_nest_asyncio()
     cfg = _validated_site_config()
     builder = _PROVIDER_BUILDERS.get(cfg.llm_provider)
     if builder is None:
