@@ -82,6 +82,12 @@ def _sync_from_api(session, public_identifier: str, lead, ct) -> list:
 
         is_outgoing = parsed["sender_host_urn"] == self_urn
 
+        # Determine message source
+        source = "manual"  # default to manual
+        if is_outgoing:
+            # Check if this is an AI message by looking for recent ActionLog.FOLLOW_UP
+            source = _detect_message_source(session, lead, parsed["delivered_at"])
+        
         # Upsert by linkedin_urn
         obj, created = ChatMessage.objects.update_or_create(
             linkedin_urn=parsed["entityUrn"],
@@ -90,6 +96,7 @@ def _sync_from_api(session, public_identifier: str, lead, ct) -> list:
                 "object_id": lead.pk,
                 "content": parsed["text"],
                 "is_outgoing": is_outgoing,
+                "source": source,
                 "owner": session.django_user,
                 **({"creation_date": parsed["delivered_at"]} if parsed["delivered_at"] else {}),
             },
@@ -132,3 +139,30 @@ def _read_from_db(public_identifier: str) -> list[dict]:
             "is_outgoing": msg.is_outgoing,
         })
     return result
+
+
+def _detect_message_source(session, lead, delivered_at) -> str:
+    """Detect if a message was sent by AI vs manual by checking recent ActionLogs."""
+    from linkedin.models import ActionLog
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    if not delivered_at:
+        return "manual"
+    
+    # Look for recent FOLLOW_UP action within 5 minutes of message delivery
+    try:
+        recent_time = delivered_at - timedelta(minutes=5)
+        future_time = delivered_at + timedelta(minutes=5)
+        
+        action_log = ActionLog.objects.filter(
+            linkedin_profile=session.linkedin_profile,
+            action_type=ActionLog.ActionType.FOLLOW_UP,
+            created_at__gte=recent_time,
+            created_at__lte=future_time
+        ).first()
+        
+        return "ai" if action_log else "manual"
+    except Exception as e:
+        logger.debug("Failed to detect message source for %s → %s", lead.public_identifier, e)
+        return "manual"

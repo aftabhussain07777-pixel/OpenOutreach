@@ -60,6 +60,13 @@ class ChatMessage(models.Model):
         verbose_name=_("Outgoing"),
         help_text=_("True if sent by us, False if received"),
     )
+    source = models.CharField(
+        max_length=10,
+        choices=[('ai', 'AI'), ('manual', 'Manual')],
+        default='manual',
+        verbose_name=_("Message Source"),
+        help_text=_("AI-sent vs human-sent message"),
+    )
     def __str__(self):
         return f'{truncatechars(self.content, 70)}'
 

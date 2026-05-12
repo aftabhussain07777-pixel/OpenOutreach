@@ -63,22 +63,22 @@ def _find(page, key: str, timeout: int = 5000) -> Locator:
 # ── Public entry point ────────────────────────────────────────────
 
 
-def send_raw_message(session, profile: Dict[str, Any], message: str) -> bool:
+def send_raw_message(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
     """Send an arbitrary message to a profile. Returns True if sent."""
     public_identifier = profile.get("public_identifier")
 
-    if _send_message(session, profile, message):
+    if _send_message(session, profile, message, source=source):
         return True
     dump_page_html(session, profile, category="message_direct")
 
-    if _send_message_via_api(session, profile, message):
+    if _send_message_via_api(session, profile, message, source=source):
         return True
 
     logger.error("All send methods failed for %s", public_identifier)
     return False
 
 
-def _send_message(session, profile: Dict[str, Any], message: str) -> bool:
+def _send_message(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
     """Navigate to /messaging/thread/new/?recipient=<urn>, compose, send.
 
     Uses the target URN (promoted to its own Lead column in crm.0005) to
@@ -113,13 +113,15 @@ def _send_message(session, profile: Dict[str, Any], message: str) -> bool:
         _find(session.page, "compose_send").first.click(delay=200)
         session.wait(0.5, 1)
         logger.info("Message sent to %s (direct thread)", public_identifier)
+        if source == "ai":
+            _mark_message_as_ai(session, public_identifier, message)
         return True
     except (PlaywrightError, TimeoutError) as e:
         logger.error("Failed to send message to %s (direct thread) → %s", public_identifier, e)
         return False
 
 
-def _send_message_via_api(session, profile: Dict[str, Any], message: str) -> bool:
+def _send_message_via_api(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
     """Last-resort fallback: send via Voyager Messaging API.
 
     Requires profile dict to contain 'urn' (target profile URN).
@@ -147,10 +149,44 @@ def _send_message_via_api(session, profile: Dict[str, Any], message: str) -> boo
     try:
         send_message(api, conversation_urn, message, mailbox_urn)
         logger.info("Message sent to %s (API fallback)", public_identifier)
+        if source == "ai":
+            _mark_message_as_ai(session, public_identifier, message)
         return True
     except Exception as e:
         logger.error("API send failed for %s → %s", public_identifier, e)
         return False
+
+
+def _mark_message_as_ai(session, public_identifier: str, message_content: str) -> None:
+    """Mark the most recent outgoing message as AI-sent."""
+    from django.contrib.contenttypes.models import ContentType
+    from crm.models import Lead
+    from chat.models import ChatMessage
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    try:
+        lead = Lead.objects.get(public_identifier=public_identifier)
+        ct = ContentType.objects.get_for_model(lead)
+        
+        # Find the most recent outgoing message with matching content sent in last 5 minutes
+        recent_time = timezone.now() - timedelta(minutes=5)
+        message = ChatMessage.objects.filter(
+            content_type=ct,
+            object_id=lead.pk,
+            content__icontains=message_content[:50],  # Match first 50 chars
+            is_outgoing=True,
+            creation_date__gte=recent_time
+        ).order_by('-creation_date').first()
+        
+        if message:
+            message.source = 'ai'
+            message.save(update_fields=['source'])
+            logger.debug("Marked message as AI-sent for %s", public_identifier)
+        else:
+            logger.warning("Could not find recent message to mark as AI for %s", public_identifier)
+    except Exception as e:
+        logger.error("Failed to mark message as AI for %s → %s", public_identifier, e)
 
 
 if __name__ == "__main__":

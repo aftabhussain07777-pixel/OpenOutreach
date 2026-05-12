@@ -52,6 +52,67 @@ def _too_soon_to_nudge(deal) -> bool:
     return timezone.now() - last.creation_date < required
 
 
+def _has_manual_messages_recently(deal) -> bool:
+    """Check if there are any manual outgoing messages in this conversation."""
+    from chat.models import ChatMessage
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils import timezone
+    from datetime import timedelta
+
+    ct = ContentType.objects.get_for_model(type(deal.lead))
+    
+    # Check for any manual outgoing messages in the last 24 hours
+    recent_manual = ChatMessage.objects.filter(
+        content_type=ct,
+        object_id=deal.lead_id,
+        source="manual",
+        is_outgoing=True,
+        creation_date__gte=timezone.now() - timedelta(hours=24)
+    ).exists()
+    
+    return recent_manual
+
+
+def _notify_manual_intervention(session, deal, public_id: str) -> None:
+    """Send notification when manual intervention is detected."""
+    from chat.models import ChatMessage
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils import timezone
+    from datetime import timedelta
+    
+    try:
+        ct = ContentType.objects.get_for_model(type(deal.lead))
+        
+        # Get the most recent manual message
+        recent_manual = ChatMessage.objects.filter(
+            content_type=ct,
+            object_id=deal.lead_id,
+            source="manual",
+            is_outgoing=True,
+            creation_date__gte=timezone.now() - timedelta(hours=24)
+        ).order_by('-creation_date').first()
+        
+        if recent_manual:
+            lead_name = deal.lead.public_identifier
+            message_preview = recent_manual.content[:100] + "..." if len(recent_manual.content) > 100 else recent_manual.content
+            
+            # Log notification
+            logger.warning(
+                "🤖 AI PAUSED: Manual message detected in conversation with %s\n"
+                "Message: \"%s\"\n"
+                "Campaign: %s\n"
+                "To resume AI follow-ups, use Django Admin or run: python manage.py resume_follow_up %s %s",
+                lead_name, message_preview, session.campaign.name, 
+                session.campaign.pk, lead_name
+            )
+            
+            # TODO: Add email/slack notifications here if needed
+            # _send_notification_email(session, deal, recent_manual)
+            
+    except Exception as e:
+        logger.error("Failed to send manual intervention notification for %s → %s", public_id, e)
+
+
 def handle_follow_up(task, session, qualifiers):
     from crm.models import Deal
     from linkedin.actions.message import send_raw_message
@@ -89,6 +150,13 @@ def handle_follow_up(task, session, qualifiers):
         enqueue_follow_up(campaign_id, public_id, delay_seconds=24 * 3600)
         return
 
+    # Conservative pause: check for manual messages
+    if _has_manual_messages_recently(deal):
+        logger.info("[%s] follow_up %s: manual message detected — pausing indefinitely", session.campaign, public_id)
+        _notify_manual_intervention(session, deal, public_id)
+        # Don't re-enqueue - requires manual resume
+        return
+
     materialize_profile_summary_if_missing(deal, session)
     decision = run_follow_up_agent(session, deal)
 
@@ -96,7 +164,7 @@ def handle_follow_up(task, session, qualifiers):
 
     if decision.action == "send_message":
         logger.info("[%s] follow_up message for %s: %s", session.campaign, public_id, decision.message)
-        sent = send_raw_message(session, profile, decision.message)
+        sent = send_raw_message(session, profile, decision.message, source="ai")
         if not sent:
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
             logger.warning("follow_up for %s: send failed — moving to QUALIFIED for re-connection", public_id)
