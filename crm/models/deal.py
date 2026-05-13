@@ -42,6 +42,10 @@ class Deal(models.Model):
     reason = models.TextField(blank=True, default="")
     connect_attempts = models.IntegerField(default=0)
     backoff_hours = models.IntegerField(default=0)
+    unanswered_follow_up_count = models.IntegerField(
+        default=0,
+        help_text="Number of consecutive AI follow-ups without a reply"
+    )
     profile_summary = models.JSONField(null=True, blank=True, default=None)
     chat_summary = models.JSONField(null=True, blank=True, default=None)
     creation_date = models.DateTimeField(default=timezone.now)

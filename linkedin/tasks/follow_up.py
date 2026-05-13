@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # 1 unanswered → 3d, 2 → 6d, 3 → 9d. Skips the LLM call while open.
 MIN_DAYS_PER_UNANSWERED = 3
 
+# Maximum number of consecutive unanswered follow-ups before auto-completing
+MAX_UNANSWERED_FOLLOW_UPS = 3
+
 
 def _build_send_profile(deal) -> dict:
     """Minimal profile dict for ``send_raw_message`` and its fallbacks.
@@ -157,6 +160,15 @@ def handle_follow_up(task, session, qualifiers):
         # Don't re-enqueue - requires manual resume
         return
 
+    # Check if we've reached the max unanswered follow-ups limit
+    if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
+        logger.info(
+            "[%s] follow_up %s: reached max unanswered follow-ups (%d) — marking as unresponsive",
+            session.campaign, public_id, MAX_UNANSWERED_FOLLOW_UPS
+        )
+        set_profile_state(session, public_id, ProfileState.COMPLETED.value, outcome="unresponsive")
+        return
+
     materialize_profile_summary_if_missing(deal, session)
     decision = run_follow_up_agent(session, deal)
 
@@ -172,6 +184,9 @@ def handle_follow_up(task, session, qualifiers):
         session.linkedin_profile.record_action(
             ActionLog.ActionType.FOLLOW_UP, session.campaign,
         )
+        # Increment unanswered follow-up counter
+        deal.unanswered_follow_up_count += 1
+        deal.save(update_fields=["unanswered_follow_up_count"])
         enqueue_follow_up(campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600)
 
     elif decision.action == "mark_completed":

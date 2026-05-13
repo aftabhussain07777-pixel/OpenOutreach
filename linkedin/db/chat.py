@@ -29,7 +29,7 @@ def sync_conversation(session, public_identifier: str) -> list[dict]:
 
 
 def _update_deal_chat_summary(session, lead, new_messages):
-    """Fold newly-synced ChatMessages into the campaign Deal's chat_summary."""
+    """Fold newly-synced ChatMessages into the campaign Deal's `chat_summary`."""
     if not new_messages:
         return
     from crm.models import Deal
@@ -39,6 +39,9 @@ def _update_deal_chat_summary(session, lead, new_messages):
     if not deal:
         return
     update_chat_summary(deal, new_messages)
+    
+    # Reset unanswered counter if lead replied
+    _reset_unanswered_counter_if_lead_replied(deal, new_messages)
 
 
 def _sync_from_api(session, public_identifier: str, lead, ct) -> list:
@@ -166,3 +169,17 @@ def _detect_message_source(session, lead, delivered_at) -> str:
     except Exception as e:
         logger.debug("Failed to detect message source for %s → %s", lead.public_identifier, e)
         return "manual"
+
+
+def _reset_unanswered_counter_if_lead_replied(deal, new_messages) -> None:
+    """Reset unanswered follow-up counter if lead sent a message."""
+    # Check if any new message is incoming (from lead)
+    has_incoming = any(not msg.is_outgoing for msg in new_messages)
+    
+    if has_incoming and deal.unanswered_follow_up_count > 0:
+        deal.unanswered_follow_up_count = 0
+        deal.save(update_fields=["unanswered_follow_up_count"])
+        logger.debug(
+            "Reset unanswered_follow_up_count for %s (lead replied)",
+            deal.lead.public_identifier
+        )
