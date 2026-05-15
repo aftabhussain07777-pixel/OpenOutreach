@@ -1,5 +1,6 @@
 # linkedin/tasks/follow_up.py
 """Follow-up task — runs the agentic follow-up for one CONNECTED profile."""
+
 from __future__ import annotations
 
 import logging
@@ -36,8 +37,9 @@ def _build_send_profile(deal) -> dict:
 
 def _too_soon_to_nudge(deal) -> bool:
     """Wait `unanswered_count * MIN_DAYS_PER_UNANSWERED` days between nudges."""
-    from chat.models import ChatMessage
     from django.contrib.contenttypes.models import ContentType
+
+    from chat.models import ChatMessage
 
     ct = ContentType.objects.get_for_model(type(deal.lead))
     messages = ChatMessage.objects.filter(content_type=ct, object_id=deal.lead_id)
@@ -57,63 +59,110 @@ def _too_soon_to_nudge(deal) -> bool:
 
 def _has_manual_messages_recently(deal) -> bool:
     """Check if there are any manual outgoing messages in this conversation."""
-    from chat.models import ChatMessage
-    from django.contrib.contenttypes.models import ContentType
-    from django.utils import timezone
     from datetime import timedelta
 
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils import timezone
+
+    from chat.models import ChatMessage
+
     ct = ContentType.objects.get_for_model(type(deal.lead))
-    
+
     # Check for any manual outgoing messages in the last 24 hours
     recent_manual = ChatMessage.objects.filter(
         content_type=ct,
         object_id=deal.lead_id,
         source="manual",
         is_outgoing=True,
-        creation_date__gte=timezone.now() - timedelta(hours=24)
+        creation_date__gte=timezone.now() - timedelta(hours=24),
     ).exists()
-    
+
     return recent_manual
+
+
+def _mark_latest_outgoing_as_ai(deal) -> None:
+    """Mark the most recent outgoing ChatMessage for this deal as AI-sent.
+
+    Called immediately after ``sync_conversation`` following an AI send, so
+    the just-sent message is guaranteed to have a ChatMessage row.  This is
+    the authoritative path for marking AI messages — it does not rely on
+    timing heuristics or content matching.
+    """
+    from django.contrib.contenttypes.models import ContentType
+
+    from chat.models import ChatMessage
+
+    ct = ContentType.objects.get_for_model(type(deal.lead))
+    latest = (
+        ChatMessage.objects.filter(
+            content_type=ct,
+            object_id=deal.lead_id,
+            is_outgoing=True,
+        )
+        .order_by("-creation_date", "-pk")
+        .first()
+    )
+    if latest is None:
+        return
+    if latest.source != "ai":
+        latest.source = "ai"
+        latest.save(update_fields=["source"])
+        logger.debug("Marked message %s as AI-sent", latest.linkedin_urn)
 
 
 def _notify_manual_intervention(session, deal, public_id: str) -> None:
     """Send notification when manual intervention is detected."""
-    from chat.models import ChatMessage
+    from datetime import timedelta
+
     from django.contrib.contenttypes.models import ContentType
     from django.utils import timezone
-    from datetime import timedelta
-    
+
+    from chat.models import ChatMessage
+
     try:
         ct = ContentType.objects.get_for_model(type(deal.lead))
-        
+
         # Get the most recent manual message
-        recent_manual = ChatMessage.objects.filter(
-            content_type=ct,
-            object_id=deal.lead_id,
-            source="manual",
-            is_outgoing=True,
-            creation_date__gte=timezone.now() - timedelta(hours=24)
-        ).order_by('-creation_date').first()
-        
+        recent_manual = (
+            ChatMessage.objects.filter(
+                content_type=ct,
+                object_id=deal.lead_id,
+                source="manual",
+                is_outgoing=True,
+                creation_date__gte=timezone.now() - timedelta(hours=24),
+            )
+            .order_by("-creation_date")
+            .first()
+        )
+
         if recent_manual:
             lead_name = deal.lead.public_identifier
-            message_preview = recent_manual.content[:100] + "..." if len(recent_manual.content) > 100 else recent_manual.content
-            
+            message_preview = (
+                recent_manual.content[:100] + "..."
+                if len(recent_manual.content) > 100
+                else recent_manual.content
+            )
+
             # Log notification
             logger.warning(
                 "🤖 AI PAUSED: Manual message detected in conversation with %s\n"
-                "Message: \"%s\"\n"
+                'Message: "%s"\n'
                 "Campaign: %s\n"
                 "To resume AI follow-ups, use Django Admin or run: python manage.py resume_follow_up %s %s",
-                lead_name, message_preview, session.campaign.name, 
-                session.campaign.pk, lead_name
+                lead_name,
+                message_preview,
+                session.campaign.name,
+                session.campaign.pk,
+                lead_name,
             )
-            
+
             # TODO: Add email/slack notifications here if needed
             # _send_notification_email(session, deal, recent_manual)
-            
+
     except Exception as e:
-        logger.error("Failed to send manual intervention notification for %s → %s", public_id, e)
+        logger.error(
+            "Failed to send manual intervention notification for %s → %s", public_id, e
+        )
 
 
 def handle_follow_up(task, session, qualifiers):
@@ -131,7 +180,9 @@ def handle_follow_up(task, session, qualifiers):
 
     logger.info(
         "[%s] %s %s",
-        session.campaign, colored("\u25b6 follow_up", "green", attrs=["bold"]), public_id,
+        session.campaign,
+        colored("\u25b6 follow_up", "green", attrs=["bold"]),
+        public_id,
     )
 
     # Rate limit check
@@ -140,7 +191,9 @@ def handle_follow_up(task, session, qualifiers):
         return
 
     deal = (
-        Deal.objects.filter(lead__public_identifier=public_id, campaign=session.campaign)
+        Deal.objects.filter(
+            lead__public_identifier=public_id, campaign=session.campaign
+        )
         .select_related("lead", "campaign")
         .first()
     )
@@ -149,13 +202,21 @@ def handle_follow_up(task, session, qualifiers):
         return
 
     if _too_soon_to_nudge(deal):
-        logger.info("[%s] follow_up %s: too soon to nudge — re-enqueuing", session.campaign, public_id)
+        logger.info(
+            "[%s] follow_up %s: too soon to nudge — re-enqueuing",
+            session.campaign,
+            public_id,
+        )
         enqueue_follow_up(campaign_id, public_id, delay_seconds=24 * 3600)
         return
 
     # Conservative pause: check for manual messages
     if _has_manual_messages_recently(deal):
-        logger.info("[%s] follow_up %s: manual message detected — pausing indefinitely", session.campaign, public_id)
+        logger.info(
+            "[%s] follow_up %s: manual message detected — pausing indefinitely",
+            session.campaign,
+            public_id,
+        )
         _notify_manual_intervention(session, deal, public_id)
         # Don't re-enqueue - requires manual resume
         return
@@ -164,9 +225,13 @@ def handle_follow_up(task, session, qualifiers):
     if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
         logger.info(
             "[%s] follow_up %s: reached max unanswered follow-ups (%d) — marking as unresponsive",
-            session.campaign, public_id, MAX_UNANSWERED_FOLLOW_UPS
+            session.campaign,
+            public_id,
+            MAX_UNANSWERED_FOLLOW_UPS,
         )
-        set_profile_state(session, public_id, ProfileState.COMPLETED.value, outcome="unresponsive")
+        set_profile_state(
+            session, public_id, ProfileState.COMPLETED.value, outcome="unresponsive"
+        )
         return
 
     materialize_profile_summary_if_missing(deal, session)
@@ -175,23 +240,51 @@ def handle_follow_up(task, session, qualifiers):
     profile = _build_send_profile(deal)
 
     if decision.action == "send_message":
-        logger.info("[%s] follow_up message for %s: %s", session.campaign, public_id, decision.message)
+        logger.info(
+            "[%s] follow_up message for %s: %s",
+            session.campaign,
+            public_id,
+            decision.message,
+        )
         sent = send_raw_message(session, profile, decision.message, source="ai")
         if not sent:
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
-            logger.warning("follow_up for %s: send failed — moving to QUALIFIED for re-connection", public_id)
+            logger.warning(
+                "follow_up for %s: send failed — moving to QUALIFIED for re-connection",
+                public_id,
+            )
             return
         session.linkedin_profile.record_action(
-            ActionLog.ActionType.FOLLOW_UP, session.campaign,
+            ActionLog.ActionType.FOLLOW_UP,
+            session.campaign,
         )
+        # Re-sync the conversation now so the just-sent message gets a
+        # ChatMessage row.  Then mark the newest outgoing as AI — we know
+        # it's AI because we just sent it.  This avoids the race where
+        # _mark_message_as_ai runs before the ChatMessage row exists.
+        from linkedin.db.chat import sync_conversation
+
+        sync_conversation(session, public_id)
+        _mark_latest_outgoing_as_ai(deal)
         # Increment unanswered follow-up counter
         deal.unanswered_follow_up_count += 1
         deal.save(update_fields=["unanswered_follow_up_count"])
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600)
+        enqueue_follow_up(
+            campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600
+        )
 
     elif decision.action == "mark_completed":
-        set_profile_state(session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome)
-        logger.info("[%s] follow_up completed for %s: outcome=%s", session.campaign, public_id, decision.outcome)
+        set_profile_state(
+            session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome
+        )
+        logger.info(
+            "[%s] follow_up completed for %s: outcome=%s",
+            session.campaign,
+            public_id,
+            decision.outcome,
+        )
 
     elif decision.action == "wait":
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600)
+        enqueue_follow_up(
+            campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600
+        )

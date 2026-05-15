@@ -1,9 +1,11 @@
 # linkedin/actions/message.py
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
 
-from playwright.sync_api import Error as PlaywrightError, Locator
-from linkedin.browser.nav import goto_page, human_type, dump_page_html
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import Locator
+
+from linkedin.browser.nav import dump_page_html, goto_page, human_type
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +65,9 @@ def _find(page, key: str, timeout: int = 5000) -> Locator:
 # ── Public entry point ────────────────────────────────────────────
 
 
-def send_raw_message(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
+def send_raw_message(
+    session, profile: Dict[str, Any], message: str, source: str = "manual"
+) -> bool:
     """Send an arbitrary message to a profile. Returns True if sent."""
     public_identifier = profile.get("public_identifier")
 
@@ -78,7 +82,9 @@ def send_raw_message(session, profile: Dict[str, Any], message: str, source: str
     return False
 
 
-def _send_message(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
+def _send_message(
+    session, profile: Dict[str, Any], message: str, source: str = "manual"
+) -> bool:
     """Navigate to /messaging/thread/new/?recipient=<urn>, compose, send.
 
     Uses the target URN (promoted to its own Lead column in crm.0005) to
@@ -117,23 +123,32 @@ def _send_message(session, profile: Dict[str, Any], message: str, source: str = 
             _mark_message_as_ai(session, public_identifier, message)
         return True
     except (PlaywrightError, TimeoutError) as e:
-        logger.error("Failed to send message to %s (direct thread) → %s", public_identifier, e)
+        logger.error(
+            "Failed to send message to %s (direct thread) → %s", public_identifier, e
+        )
         return False
 
 
-def _send_message_via_api(session, profile: Dict[str, Any], message: str, source: str = "manual") -> bool:
+def _send_message_via_api(
+    session, profile: Dict[str, Any], message: str, source: str = "manual"
+) -> bool:
     """Last-resort fallback: send via Voyager Messaging API.
 
     Requires profile dict to contain 'urn' (target profile URN).
     """
+    from linkedin.actions.conversations import (
+        find_conversation_urn,
+        find_conversation_urn_via_navigation,
+    )
     from linkedin.api.client import PlaywrightLinkedinAPI
     from linkedin.api.messaging import send_message
-    from linkedin.actions.conversations import find_conversation_urn, find_conversation_urn_via_navigation
 
     public_identifier = profile.get("public_identifier")
     target_urn = profile.get("urn")
     if not target_urn:
-        logger.error("API send failed for %s → no URN in profile dict", public_identifier)
+        logger.error(
+            "API send failed for %s → no URN in profile dict", public_identifier
+        )
         return False
 
     mailbox_urn = session.self_profile["urn"]
@@ -143,7 +158,9 @@ def _send_message_via_api(session, profile: Dict[str, Any], message: str, source
     if not conversation_urn:
         conversation_urn = find_conversation_urn_via_navigation(session, target_urn)
     if not conversation_urn:
-        logger.error("API send failed for %s → no conversation found", public_identifier)
+        logger.error(
+            "API send failed for %s → no conversation found", public_identifier
+        )
         return False
 
     try:
@@ -158,33 +175,73 @@ def _send_message_via_api(session, profile: Dict[str, Any], message: str, source
 
 
 def _mark_message_as_ai(session, public_identifier: str, message_content: str) -> None:
-    """Mark the most recent outgoing message as AI-sent."""
-    from django.contrib.contenttypes.models import ContentType
-    from crm.models import Lead
-    from chat.models import ChatMessage
-    from django.utils import timezone
+    """Mark the most recent outgoing message as AI-sent.
+
+    This is a best-effort fallback that runs immediately after send.  The
+    authoritative path is
+    :func:`~linkedin.tasks.follow_up._mark_latest_outgoing_as_ai`, which
+    runs after a post-send ``sync_conversation`` and doesn't need content
+    matching.
+
+    We try content matching first (fast path — the message row may exist
+    if sync was called before send in a different code path), then fall
+    back to "latest outgoing" which is reliable when sync has run after
+    send.
+    """
     from datetime import timedelta
-    
+
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils import timezone
+
+    from chat.models import ChatMessage
+    from crm.models import Lead
+
     try:
         lead = Lead.objects.get(public_identifier=public_identifier)
         ct = ContentType.objects.get_for_model(lead)
-        
-        # Find the most recent outgoing message with matching content sent in last 5 minutes
+
         recent_time = timezone.now() - timedelta(minutes=5)
-        message = ChatMessage.objects.filter(
-            content_type=ct,
-            object_id=lead.pk,
-            content__icontains=message_content[:50],  # Match first 50 chars
-            is_outgoing=True,
-            creation_date__gte=recent_time
-        ).order_by('-creation_date').first()
-        
-        if message:
-            message.source = 'ai'
-            message.save(update_fields=['source'])
+
+        # Fast path: match by content prefix (works when ChatMessage was
+        # already created by a prior sync).
+        message = (
+            ChatMessage.objects.filter(
+                content_type=ct,
+                object_id=lead.pk,
+                content__icontains=message_content[:50],
+                is_outgoing=True,
+                creation_date__gte=recent_time,
+            )
+            .order_by("-creation_date")
+            .first()
+        )
+
+        # Slow path: content match failed (common when sync runs before
+        # send).  Fall back to the most recent outgoing.
+        if message is None:
+            message = (
+                ChatMessage.objects.filter(
+                    content_type=ct,
+                    object_id=lead.pk,
+                    is_outgoing=True,
+                    creation_date__gte=recent_time,
+                )
+                .order_by("-creation_date")
+                .first()
+            )
+
+        if message and message.source != "ai":
+            message.source = "ai"
+            message.save(update_fields=["source"])
             logger.debug("Marked message as AI-sent for %s", public_identifier)
-        else:
-            logger.warning("Could not find recent message to mark as AI for %s", public_identifier)
+        elif message is None:
+            logger.debug(
+                "_mark_message_as_ai: no recent outgoing ChatMessage for %s "
+                "(sync may not have run yet — this is normal; "
+                "_mark_latest_outgoing_as_ai in follow_up handler is the "
+                "authoritative path)",
+                public_identifier,
+            )
     except Exception as e:
         logger.error("Failed to mark message as AI for %s → %s", public_identifier, e)
 
