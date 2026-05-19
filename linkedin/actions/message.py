@@ -177,16 +177,12 @@ def _send_message_via_api(
 def _mark_message_as_ai(session, public_identifier: str, message_content: str) -> None:
     """Mark the most recent outgoing message as AI-sent.
 
-    This is a best-effort fallback that runs immediately after send.  The
-    authoritative path is
-    :func:`~linkedin.tasks.follow_up._mark_latest_outgoing_as_ai`, which
-    runs after a post-send ``sync_conversation`` and doesn't need content
-    matching.
+    Best-effort helper that runs immediately after send.  Tries content
+    matching first, then falls back to the most recent outgoing message.
 
-    We try content matching first (fast path — the message row may exist
-    if sync was called before send in a different code path), then fall
-    back to "latest outgoing" which is reliable when sync has run after
-    send.
+    This keeps ``source`` accurate for analytics / admin display but is NOT
+    used for manual-intervention detection — that is done via timestamp
+    comparison in :func:`~linkedin.tasks.follow_up._has_manual_messages_recently`.
     """
     from datetime import timedelta
 

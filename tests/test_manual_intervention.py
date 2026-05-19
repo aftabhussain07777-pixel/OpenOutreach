@@ -12,7 +12,7 @@ from django.utils import timezone
 from chat.models import ChatMessage
 from crm.models import Deal, Lead
 from linkedin.actions.message import _mark_message_as_ai
-from linkedin.models import Campaign, LinkedInProfile
+from linkedin.models import ActionLog, Campaign, LinkedInProfile
 from linkedin.tasks.follow_up import (
     _has_manual_messages_recently,
     _notify_manual_intervention,
@@ -38,51 +38,91 @@ class ManualInterventionTestCase(TestCase):
         )
         self.ct = ContentType.objects.get_for_model(Lead)
 
-    def test_has_manual_messages_recently_true(self):
-        """Test detection when manual messages exist."""
-        # Create a manual message from 2 hours ago
+        # Build a minimal LinkedInProfile for timestamp-comparison detection.
+        from django.contrib.auth.models import User
+
+        user = User.objects.create_user(username="testuser")
+        self.profile, _ = LinkedInProfile.objects.get_or_create(
+            user=user,
+            defaults={
+                "linkedin_username": "test@example.com",
+                "linkedin_password": "testpass",
+            },
+        )
+        self.session = Mock()
+        self.session.linkedin_profile = self.profile
+        self.session.campaign = self.campaign
+
+    def _make_action_log(self, minutes_ago=0):
+        """Create a FOLLOW_UP ActionLog with an absolute ``created_at``.
+
+        Uses ``update()`` after creation to bypass ``auto_now_add=True``.
+        """
+        log = ActionLog.objects.create(
+            linkedin_profile=self.profile,
+            campaign=self.campaign,
+            action_type=ActionLog.ActionType.FOLLOW_UP,
+        )
+        if minutes_ago:
+            ActionLog.objects.filter(pk=log.pk).update(
+                created_at=timezone.now() - timedelta(minutes=minutes_ago),
+            )
+        return log
+
+    def test_has_manual_messages_true_when_no_actionlog(self):
+        """Outgoing message exists but no AI ActionLog → manual."""
         ChatMessage.objects.create(
             content_type=self.ct,
             object_id=self.lead.pk,
             content="Manual message",
-            source="manual",
             is_outgoing=True,
             creation_date=timezone.now() - timedelta(hours=2),
         )
+        self.assertTrue(_has_manual_messages_recently(self.deal, self.session))
 
-        self.assertTrue(_has_manual_messages_recently(self.deal))
-
-    def test_has_manual_messages_recently_false_with_ai_only(self):
-        """Test no detection when only AI messages exist."""
-        # Create an AI message from 2 hours ago
+    def test_has_manual_messages_false_when_timestamps_match(self):
+        """Outgoing message and ActionLog have nearby timestamps → AI."""
+        now = timezone.now()
+        self._make_action_log(minutes_ago=120)
         ChatMessage.objects.create(
             content_type=self.ct,
             object_id=self.lead.pk,
             content="AI message",
-            source="ai",
             is_outgoing=True,
-            creation_date=timezone.now() - timedelta(hours=2),
+            creation_date=now - timedelta(minutes=120),
         )
+        self.assertFalse(_has_manual_messages_recently(self.deal, self.session))
 
-        self.assertFalse(_has_manual_messages_recently(self.deal))
-
-    def test_has_manual_messages_recently_false_old_messages(self):
-        """Test no detection when manual messages are older than 24 hours."""
-        # Create a manual message from 2 days ago
+    def test_has_manual_messages_true_when_timestamps_mismatch(self):
+        """Outgoing message timestamp differs from last ActionLog by >2 min → manual."""
+        now = timezone.now()
+        # AI action 3 hours ago
+        self._make_action_log(minutes_ago=180)
+        # Manual message 30 minutes ago (timestamp mismatch > 2 min)
         ChatMessage.objects.create(
             content_type=self.ct,
             object_id=self.lead.pk,
-            content="Old manual message",
-            source="manual",
+            content="Manual message",
             is_outgoing=True,
-            creation_date=timezone.now() - timedelta(days=2),
+            creation_date=now - timedelta(minutes=30),
         )
+        self.assertTrue(_has_manual_messages_recently(self.deal, self.session))
 
-        self.assertFalse(_has_manual_messages_recently(self.deal))
+    def test_has_manual_messages_false_no_messages(self):
+        """No outgoing messages at all → nothing to detect."""
+        self.assertFalse(_has_manual_messages_recently(self.deal, self.session))
 
-    def test_has_manual_messages_recently_false_no_messages(self):
-        """Test no detection when no messages exist."""
-        self.assertFalse(_has_manual_messages_recently(self.deal))
+    def test_has_manual_messages_ignores_lead_replies(self):
+        """Lead replies (is_outgoing=False) are ignored."""
+        ChatMessage.objects.create(
+            content_type=self.ct,
+            object_id=self.lead.pk,
+            content="Lead reply",
+            is_outgoing=False,
+            creation_date=timezone.now() - timedelta(hours=1),
+        )
+        # No outgoing messages, only incoming → nothing to detect
+        self.assertFalse(_has_manual_messages_recently(self.deal, self.session))
 
     @patch("linkedin.tasks.follow_up.logger")
     def test_notify_manual_intervention(self, mock_logger):

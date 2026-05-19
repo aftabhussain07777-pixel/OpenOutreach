@@ -362,16 +362,12 @@ class TestHandleCheckPending:
 @pytest.mark.django_db
 class TestHandleFollowUp:
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
-    @patch("linkedin.tasks.follow_up._mark_latest_outgoing_as_ai")
-    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.actions.message.send_raw_message", return_value=True)
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
     def test_send_message_records_action_and_enqueues(
         self,
         mock_agent,
         mock_send,
-        mock_sync,
-        mock_mark,
         mock_materialize,
         fake_session,
     ):

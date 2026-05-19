@@ -57,43 +57,28 @@ def _too_soon_to_nudge(deal) -> bool:
     return timezone.now() - last.creation_date < required
 
 
-def _has_manual_messages_recently(deal) -> bool:
-    """Check if there are any manual outgoing messages in this conversation."""
-    from datetime import timedelta
-
-    from django.contrib.contenttypes.models import ContentType
-    from django.utils import timezone
-
-    from chat.models import ChatMessage
-
-    ct = ContentType.objects.get_for_model(type(deal.lead))
-
-    # Check for any manual outgoing messages in the last 24 hours
-    recent_manual = ChatMessage.objects.filter(
-        content_type=ct,
-        object_id=deal.lead_id,
-        source="manual",
-        is_outgoing=True,
-        creation_date__gte=timezone.now() - timedelta(hours=24),
-    ).exists()
-
-    return recent_manual
+TIMESTAMP_TOLERANCE_SECONDS = 120
 
 
-def _mark_latest_outgoing_as_ai(deal) -> None:
-    """Mark the most recent outgoing ChatMessage for this deal as AI-sent.
+def _has_manual_messages_recently(deal, session) -> bool:
+    """Detect manual messages by comparing the last outgoing message timestamp
+    with the last AI follow-up ActionLog timestamp.
 
-    Called immediately after ``sync_conversation`` following an AI send, so
-    the just-sent message is guaranteed to have a ChatMessage row.  This is
-    the authoritative path for marking AI messages — it does not rely on
-    timing heuristics or content matching.
+    Only outgoing messages (``is_outgoing=True`` — messages *we* sent) are
+    compared.  Lead replies are ignored.
+
+    If the last outgoing message was sent at a time when NO AI follow-up
+    action was recorded, someone sent it manually outside the system.
     """
     from django.contrib.contenttypes.models import ContentType
 
     from chat.models import ChatMessage
 
     ct = ContentType.objects.get_for_model(type(deal.lead))
-    latest = (
+
+    # Get the most recent outgoing message (sent by our account — could
+    # be AI or manual).  Lead replies (is_outgoing=False) are irrelevant.
+    last_outgoing = (
         ChatMessage.objects.filter(
             content_type=ct,
             object_id=deal.lead_id,
@@ -102,66 +87,93 @@ def _mark_latest_outgoing_as_ai(deal) -> None:
         .order_by("-creation_date", "-pk")
         .first()
     )
-    if latest is None:
-        return
-    if latest.source != "ai":
-        latest.source = "ai"
-        latest.save(update_fields=["source"])
-        logger.debug("Marked message %s as AI-sent", latest.linkedin_urn)
+
+    # No outgoing messages at all → nothing to detect
+    if last_outgoing is None:
+        return False
+
+    # Get the most recent AI follow-up action for this campaign.
+    last_action = (
+        ActionLog.objects.filter(
+            linkedin_profile=session.linkedin_profile,
+            campaign=deal.campaign,
+            action_type=ActionLog.ActionType.FOLLOW_UP,
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+    # If there's an outgoing message but NO ActionLog entry at all,
+    # it must be manual (the AI always creates an ActionLog when it sends).
+    if last_action is None:
+        return True
+
+    # Compare timestamps.  If the last outgoing message was sent more than
+    # TIMESTAMP_TOLERANCE_SECONDS away from the last AI action, it's manual.
+    diff = abs((last_outgoing.creation_date - last_action.created_at).total_seconds())
+    is_manual = diff > TIMESTAMP_TOLERANCE_SECONDS
+
+    if is_manual:
+        logger.debug(
+            "Manual message detected for %s: last outgoing at %s, "
+            "last AI action at %s (diff=%ds)",
+            deal.lead.public_identifier,
+            last_outgoing.creation_date,
+            last_action.created_at,
+            diff,
+        )
+
+    return is_manual
 
 
 def _notify_manual_intervention(session, deal, public_id: str) -> None:
-    """Send notification when manual intervention is detected."""
-    from datetime import timedelta
-
+    """Log a warning that AI follow-ups have been paused due to manual
+    intervention, with a preview of the manual message."""
     from django.contrib.contenttypes.models import ContentType
-    from django.utils import timezone
 
     from chat.models import ChatMessage
 
     try:
         ct = ContentType.objects.get_for_model(type(deal.lead))
 
-        # Get the most recent manual message
-        recent_manual = (
+        last_manual = (
             ChatMessage.objects.filter(
                 content_type=ct,
                 object_id=deal.lead_id,
-                source="manual",
                 is_outgoing=True,
-                creation_date__gte=timezone.now() - timedelta(hours=24),
             )
             .order_by("-creation_date")
             .first()
         )
 
-        if recent_manual:
-            lead_name = deal.lead.public_identifier
+        lead_name = deal.lead.public_identifier
+        message_preview = ""
+        if last_manual:
             message_preview = (
-                recent_manual.content[:100] + "..."
-                if len(recent_manual.content) > 100
-                else recent_manual.content
+                last_manual.content[:100] + "..."
+                if len(last_manual.content) > 100
+                else last_manual.content
             )
 
-            # Log notification
-            logger.warning(
-                "🤖 AI PAUSED: Manual message detected in conversation with %s\n"
-                'Message: "%s"\n'
-                "Campaign: %s\n"
-                "To resume AI follow-ups, use Django Admin or run: python manage.py resume_follow_up %s %s",
-                lead_name,
-                message_preview,
-                session.campaign.name,
-                session.campaign.pk,
-                lead_name,
-            )
-
-            # TODO: Add email/slack notifications here if needed
-            # _send_notification_email(session, deal, recent_manual)
+        logger.warning(
+            "\U0001f916 AI PAUSED: Manual message detected in conversation"
+            " with %s\n"
+            'Message: "%s"\n'
+            "Campaign: %s\n"
+            "To resume AI follow-ups, use Django Admin or run: "
+            "python manage.py resume_follow_up %s %s",
+            lead_name,
+            message_preview,
+            session.campaign.name,
+            session.campaign.pk,
+            lead_name,
+        )
 
     except Exception as e:
         logger.error(
-            "Failed to send manual intervention notification for %s → %s", public_id, e
+            "Failed to send manual intervention notification for %s → %s",
+            public_id,
+            e,
         )
 
 
@@ -210,8 +222,8 @@ def handle_follow_up(task, session, qualifiers):
         enqueue_follow_up(campaign_id, public_id, delay_seconds=24 * 3600)
         return
 
-    # Conservative pause: check for manual messages
-    if _has_manual_messages_recently(deal):
+    # Conservative pause: check for manual messages (timestamp mismatch)
+    if _has_manual_messages_recently(deal, session):
         logger.info(
             "[%s] follow_up %s: manual message detected — pausing indefinitely",
             session.campaign,
@@ -258,14 +270,6 @@ def handle_follow_up(task, session, qualifiers):
             ActionLog.ActionType.FOLLOW_UP,
             session.campaign,
         )
-        # Re-sync the conversation now so the just-sent message gets a
-        # ChatMessage row.  Then mark the newest outgoing as AI — we know
-        # it's AI because we just sent it.  This avoids the race where
-        # _mark_message_as_ai runs before the ChatMessage row exists.
-        from linkedin.db.chat import sync_conversation
-
-        sync_conversation(session, public_id)
-        _mark_latest_outgoing_as_ai(deal)
         # Increment unanswered follow-up counter
         deal.unanswered_follow_up_count += 1
         deal.save(update_fields=["unanswered_follow_up_count"])

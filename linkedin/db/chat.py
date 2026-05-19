@@ -180,9 +180,9 @@ def _detect_message_source(session, lead, delivered_at) -> str:
     ActionLog lookup to the current campaign so cross-campaign follow-ups
     never cause false AI classifications.
 
-    This is a fallback — the authoritative path is
-    :func:`~linkedin.tasks.follow_up._mark_latest_outgoing_as_ai`, which
-    runs immediately after an AI send.
+    This keeps ``source`` accurate for analytics / admin display but is NOT
+    used for manual-intervention detection — that is done via timestamp
+    comparison in :func:`~linkedin.tasks.follow_up._has_manual_messages_recently`.
     """
     from datetime import timedelta
 
