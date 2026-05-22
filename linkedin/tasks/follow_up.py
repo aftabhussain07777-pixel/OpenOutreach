@@ -61,15 +61,17 @@ TIMESTAMP_TOLERANCE_SECONDS = 120
 
 
 def _has_manual_messages_recently(deal, session) -> bool:
-    """Detect manual messages by comparing the last outgoing message timestamp
-    with the last AI follow-up ActionLog timestamp.
+    """Detect manual messages by checking if the last outgoing message has a
+    matching ActionLog nearby in time.
 
     Only outgoing messages (``is_outgoing=True`` — messages *we* sent) are
     compared.  Lead replies are ignored.
 
-    If the last outgoing message was sent at a time when NO AI follow-up
-    action was recorded, someone sent it manually outside the system.
+    If the last outgoing message's timestamp has NO FOLLOW_UP ActionLog
+    within ``TIMESTAMP_TOLERANCE_SECONDS``, it was sent manually.
     """
+    from datetime import timedelta
+
     from django.contrib.contenttypes.models import ContentType
 
     from chat.models import ChatMessage
@@ -88,42 +90,41 @@ def _has_manual_messages_recently(deal, session) -> bool:
         .first()
     )
 
-    # No outgoing messages at all → nothing to detect
+    # No outgoing messages at all -> nothing to detect
     if last_outgoing is None:
         return False
 
-    # Get the most recent AI follow-up action for this campaign.
-    last_action = (
+    # Check if there's an ActionLog within TIMESTAMP_TOLERANCE_SECONDS of
+    # the last outgoing message's creation_date.  If yes, the message was
+    # sent by the AI (which always creates an ActionLog).  If not, someone
+    # sent it manually outside the system.
+    window_start = last_outgoing.creation_date - timedelta(
+        seconds=TIMESTAMP_TOLERANCE_SECONDS
+    )
+    window_end = last_outgoing.creation_date + timedelta(
+        seconds=TIMESTAMP_TOLERANCE_SECONDS
+    )
+
+    nearby = (
         ActionLog.objects.filter(
             linkedin_profile=session.linkedin_profile,
             campaign=deal.campaign,
             action_type=ActionLog.ActionType.FOLLOW_UP,
-        )
-        .order_by("-created_at")
-        .first()
+            created_at__gte=window_start,
+            created_at__lte=window_end,
+        ).exists()
     )
 
-    # If there's an outgoing message but NO ActionLog entry at all,
-    # it must be manual (the AI always creates an ActionLog when it sends).
-    if last_action is None:
-        return True
-
-    # Compare timestamps.  If the last outgoing message was sent more than
-    # TIMESTAMP_TOLERANCE_SECONDS away from the last AI action, it's manual.
-    diff = abs((last_outgoing.creation_date - last_action.created_at).total_seconds())
-    is_manual = diff > TIMESTAMP_TOLERANCE_SECONDS
-
-    if is_manual:
+    if not nearby:
         logger.debug(
             "Manual message detected for %s: last outgoing at %s, "
-            "last AI action at %s (diff=%ds)",
+            "no FOLLOW_UP ActionLog within %ds",
             deal.lead.public_identifier,
             last_outgoing.creation_date,
-            last_action.created_at,
-            diff,
+            TIMESTAMP_TOLERANCE_SECONDS,
         )
 
-    return is_manual
+    return not nearby
 
 
 def _notify_manual_intervention(session, deal, public_id: str) -> None:
