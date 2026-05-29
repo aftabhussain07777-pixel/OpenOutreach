@@ -223,17 +223,6 @@ def handle_follow_up(task, session, qualifiers):
         enqueue_follow_up(campaign_id, public_id, delay_seconds=24 * 3600)
         return
 
-    # Conservative pause: check for manual messages (timestamp mismatch)
-    if _has_manual_messages_recently(deal, session):
-        logger.info(
-            "[%s] follow_up %s: manual message detected — pausing indefinitely",
-            session.campaign,
-            public_id,
-        )
-        _notify_manual_intervention(session, deal, public_id)
-        # Don't re-enqueue - requires manual resume
-        return
-
     # Check if we've reached the max unanswered follow-ups limit
     if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
         logger.info(
@@ -248,6 +237,24 @@ def handle_follow_up(task, session, qualifiers):
         return
 
     materialize_profile_summary_if_missing(deal, session)
+
+    # Sync conversation before checking for manual messages, so we have
+    # fresh ChatMessage data including any manual messages the user sent
+    # directly on LinkedIn.
+    from linkedin.db.chat import sync_conversation
+    sync_conversation(session, public_id)
+
+    # Conservative pause: check for manual messages (timestamp mismatch)
+    if _has_manual_messages_recently(deal, session):
+        logger.info(
+            "[%s] follow_up %s: manual message detected — pausing indefinitely",
+            session.campaign,
+            public_id,
+        )
+        _notify_manual_intervention(session, deal, public_id)
+        # Don't re-enqueue - requires manual resume
+        return
+
     decision = run_follow_up_agent(session, deal)
 
     profile = _build_send_profile(deal)

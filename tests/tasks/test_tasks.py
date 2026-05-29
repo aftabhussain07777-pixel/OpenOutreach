@@ -362,12 +362,14 @@ class TestHandleCheckPending:
 @pytest.mark.django_db
 class TestHandleFollowUp:
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
+    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.actions.message.send_raw_message", return_value=True)
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
     def test_send_message_records_action_and_enqueues(
         self,
         mock_agent,
         mock_send,
+        mock_sync,
         mock_materialize,
         fake_session,
     ):
@@ -406,10 +408,11 @@ class TestHandleFollowUp:
         ).exists()
 
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
+    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.actions.message.send_raw_message", return_value=False)
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
     def test_send_failure_resets_to_connected_and_reenqueues(
-        self, mock_agent, mock_send, mock_materialize, fake_session
+        self, mock_agent, mock_send, mock_sync, mock_materialize, fake_session
     ):
         mock_agent.return_value = FollowUpDecision(
             action="send_message",
@@ -435,9 +438,10 @@ class TestHandleFollowUp:
         assert deal.state == ProfileState.QUALIFIED
 
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
+    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
     def test_mark_completed_sets_state(
-        self, mock_agent, mock_materialize, fake_session
+        self, mock_agent, mock_sync, mock_materialize, fake_session
     ):
         mock_agent.return_value = FollowUpDecision(
             action="mark_completed",
@@ -466,8 +470,9 @@ class TestHandleFollowUp:
         ).exists()
 
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
+    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
-    def test_wait_enqueues_follow_up(self, mock_agent, mock_materialize, fake_session):
+    def test_wait_enqueues_follow_up(self, mock_agent, mock_sync, mock_materialize, fake_session):
         mock_agent.return_value = FollowUpDecision(
             action="wait",
             follow_up_hours=48,
