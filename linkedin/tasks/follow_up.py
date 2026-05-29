@@ -157,17 +157,11 @@ def _notify_manual_intervention(session, deal, public_id: str) -> None:
             )
 
         logger.warning(
-            "\U0001f916 AI PAUSED: Manual message detected in conversation"
-            " with %s\n"
-            'Message: "%s"\n'
-            "Campaign: %s\n"
-            "To resume AI follow-ups, use Django Admin or run: "
-            "python manage.py resume_follow_up %s %s",
+            "\U0001f916 Manual message detected - skipping follow-up for 7d"
+            " (%s)\n"
+            'Message: "%s"',
             lead_name,
             message_preview,
-            session.campaign.name,
-            session.campaign.pk,
-            lead_name,
         )
 
     except Exception as e:
@@ -220,7 +214,7 @@ def handle_follow_up(task, session, qualifiers):
             session.campaign,
             public_id,
         )
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=24 * 3600)
+        enqueue_follow_up(campaign_id, public_id, delay_seconds=7 * 24 * 3600)
         return
 
     # Check if we've reached the max unanswered follow-ups limit
@@ -244,15 +238,18 @@ def handle_follow_up(task, session, qualifiers):
     from linkedin.db.chat import sync_conversation
     sync_conversation(session, public_id)
 
-    # Conservative pause: check for manual messages (timestamp mismatch)
+    # Conservative pause: check for manual messages (timestamp mismatch).
+    # When a manual message is detected, re-enqueue with a 7d delay
+    # instead of pausing forever.  This prevents an infinite loop where
+    # reconcile immediately recreates the task for the still-CONNECTED deal.
     if _has_manual_messages_recently(deal, session):
         logger.info(
-            "[%s] follow_up %s: manual message detected — pausing indefinitely",
+            "[%s] follow_up %s: manual message detected — skipping for 7d",
             session.campaign,
             public_id,
         )
         _notify_manual_intervention(session, deal, public_id)
-        # Don't re-enqueue - requires manual resume
+        enqueue_follow_up(campaign_id, public_id, delay_seconds=7 * 24 * 3600)
         return
 
     decision = run_follow_up_agent(session, deal)

@@ -146,14 +146,11 @@ class ManualInterventionTestCase(TestCase):
 
         # Verify logger was called with expected message
         mock_logger.warning.assert_called_once()
-        # The format string uses %s placeholders — check both the template
-        # and the positional args.
         template, *args = mock_logger.warning.call_args[0]
 
-        self.assertIn("AI PAUSED", template)
+        self.assertIn("Manual message detected", template)
         self.assertEqual(args[0], "test-user")  # lead_name
         self.assertIn("This is a manual message", args[1])  # message_preview
-        self.assertEqual(args[2], self.campaign.name)  # campaign name
 
     @patch("linkedin.actions.message.logger")
     def test_mark_message_as_ai(self, mock_logger):
