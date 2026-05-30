@@ -46,6 +46,7 @@ class Deal(models.Model):
         default=0,
         help_text="Number of consecutive AI follow-ups without a reply"
     )
+    next_check_pending_at = models.DateTimeField(null=True, blank=True, db_index=True)
     profile_summary = models.JSONField(null=True, blank=True, default=None)
     chat_summary = models.JSONField(null=True, blank=True, default=None)
     creation_date = models.DateTimeField(default=timezone.now)

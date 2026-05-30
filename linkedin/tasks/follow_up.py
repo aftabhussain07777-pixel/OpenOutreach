@@ -1,6 +1,5 @@
 # linkedin/tasks/follow_up.py
-"""Follow-up task — runs the agentic follow-up for one CONNECTED profile."""
-
+"""Follow-up task — runs the agentic follow-up for one eligible CONNECTED deal."""
 from __future__ import annotations
 
 import logging
@@ -9,6 +8,7 @@ from datetime import timedelta
 from django.utils import timezone
 from termcolor import colored
 
+from linkedin.enums import ProfileState
 from linkedin.models import ActionLog
 
 logger = logging.getLogger(__name__)
@@ -22,12 +22,7 @@ MAX_UNANSWERED_FOLLOW_UPS = 3
 
 
 def _build_send_profile(deal) -> dict:
-    """Minimal profile dict for ``send_raw_message`` and its fallbacks.
-
-    Populated from the Lead row — all three send strategies (popup,
-    direct-thread, API) now navigate by URN so no human-readable name
-    is required.
-    """
+    """Minimal profile dict for ``send_raw_message`` and its fallbacks."""
     lead = deal.lead
     return {
         "public_identifier": lead.public_identifier,
@@ -36,7 +31,8 @@ def _build_send_profile(deal) -> dict:
 
 
 def _too_soon_to_nudge(deal) -> bool:
-    """Wait `unanswered_count * MIN_DAYS_PER_UNANSWERED` days between nudges."""
+    """Wait ``unanswered_count * MIN_DAYS_PER_UNANSWERED`` days between nudges."""
+    from chat.models import ChatMessage
     from django.contrib.contenttypes.models import ContentType
 
     from chat.models import ChatMessage
@@ -172,50 +168,48 @@ def _notify_manual_intervention(session, deal, public_id: str) -> None:
         )
 
 
-def handle_follow_up(task, session, qualifiers):
+def _next_followup_deal(campaign):
+    """Oldest CONNECTED deal in *campaign* not on a nudge cooldown."""
     from crm.models import Deal
+
+    deals = (
+        Deal.objects.filter(
+            campaign=campaign,
+            state=ProfileState.CONNECTED,
+            outcome="",
+            lead__disqualified=False,
+        )
+        .select_related("lead", "campaign")
+        .order_by("update_date")
+    )
+    for deal in deals:
+        if not _too_soon_to_nudge(deal):
+            return deal
+    return None
+
+
+def handle_follow_up(task, session, qualifiers):
     from linkedin.actions.message import send_raw_message
     from linkedin.agents.follow_up import run_follow_up_agent
     from linkedin.db.deals import set_profile_state
     from linkedin.db.summaries import materialize_profile_summary_if_missing
-    from linkedin.enums import ProfileState
-    from linkedin.tasks.scheduler import enqueue_follow_up
 
-    payload = task.payload
-    public_id = payload["public_id"]
-    campaign_id = payload["campaign_id"]
+    campaign = session.campaign
 
+    if not session.linkedin_profile.can_execute(ActionLog.ActionType.FOLLOW_UP):
+        logger.info("[%s] follow_up: daily limit reached — slot skipped", campaign)
+        return
+
+    deal = _next_followup_deal(campaign)
+    if deal is None:
+        logger.info("[%s] follow_up: no eligible CONNECTED deal — slot skipped", campaign)
+        return
+
+    public_id = deal.lead.public_identifier
     logger.info(
         "[%s] %s %s",
-        session.campaign,
-        colored("\u25b6 follow_up", "green", attrs=["bold"]),
-        public_id,
+        campaign, colored("▶ follow_up", "green", attrs=["bold"]), public_id,
     )
-
-    # Rate limit check
-    if not session.linkedin_profile.can_execute(ActionLog.ActionType.FOLLOW_UP):
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=3600)
-        return
-
-    deal = (
-        Deal.objects.filter(
-            lead__public_identifier=public_id, campaign=session.campaign
-        )
-        .select_related("lead", "campaign")
-        .first()
-    )
-    if deal is None:
-        logger.warning("follow_up: no Deal for %s — skipping", public_id)
-        return
-
-    if _too_soon_to_nudge(deal):
-        logger.info(
-            "[%s] follow_up %s: too soon to nudge — re-enqueuing",
-            session.campaign,
-            public_id,
-        )
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=7 * 24 * 3600)
-        return
 
     # Check if we've reached the max unanswered follow-ups limit
     if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
@@ -257,12 +251,7 @@ def handle_follow_up(task, session, qualifiers):
     profile = _build_send_profile(deal)
 
     if decision.action == "send_message":
-        logger.info(
-            "[%s] follow_up message for %s: %s",
-            session.campaign,
-            public_id,
-            decision.message,
-        )
+        logger.info("[%s] follow_up message for %s: %s", campaign, public_id, decision.message)
         sent = send_raw_message(session, profile, decision.message, source="ai")
         if not sent:
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
@@ -281,19 +270,22 @@ def handle_follow_up(task, session, qualifiers):
         enqueue_follow_up(
             campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600
         )
+        
+        # Persist the outgoing message locally and bump update_date so the
+        # next slot's eligibility query respects the cooldown and moves
+        # this deal to the back of the queue.
+        from linkedin.db.chat import sync_conversation
+        try:
+            sync_conversation(session, public_id)
+        except Exception:
+            logger.exception("post-send sync failed for %s (best-effort)", public_id)
+        deal.save()
 
     elif decision.action == "mark_completed":
-        set_profile_state(
-            session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome
-        )
-        logger.info(
-            "[%s] follow_up completed for %s: outcome=%s",
-            session.campaign,
-            public_id,
-            decision.outcome,
-        )
+        set_profile_state(session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome)
+        logger.info("[%s] follow_up completed for %s: outcome=%s", campaign, public_id, decision.outcome)
 
     elif decision.action == "wait":
-        enqueue_follow_up(
-            campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600
-        )
+        # Bump update_date so the eligibility query cycles to a different deal
+        # next time; this deal returns to the front only after others are touched.
+        deal.save()

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent
 
 from linkedin.conf import PROMPTS_DIR
-from linkedin.llm import get_llm_model
+from linkedin.llm import get_llm_model, run_agent_sync
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,7 @@ def _render_system_prompt(session, deal, recent_messages: list) -> str:
     now = timezone.now()
     return template.render(
         self_name=self_name,
+        contact_email=session.linkedin_profile.linkedin_username,
         product_docs=campaign.product_docs or "",
         campaign_objective=campaign.campaign_objective or "",
         booking_link=campaign.booking_link or "",
@@ -181,7 +182,7 @@ def run_follow_up_agent(session, deal) -> FollowUpDecision:
         output_type=FollowUpDecision,
         model_settings={"temperature": 0.7, "timeout": 60},
     )
-    decision = agent.run_sync(system_prompt).output
+    decision = run_agent_sync(agent.run(system_prompt)).output
     if decision is None:
         raise RuntimeError(f"LLM returned unparseable response for follow-up of {public_id}")
 
