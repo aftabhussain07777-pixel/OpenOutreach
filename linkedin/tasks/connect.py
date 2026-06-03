@@ -5,6 +5,7 @@ Lazy: the task payload carries only ``campaign_id``. The handler picks
 its candidate at execution time via the campaign's ``ConnectStrategy``.
 No self-rescheduling — pacing is owned by ``tasks/scheduler.py``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,9 +16,13 @@ from termcolor import colored
 
 from linkedin.db.deals import increment_connect_attempts, set_profile_state
 from linkedin.db.leads import disqualify_lead
-from linkedin.models import ActionLog
 from linkedin.enums import ProfileState
-from linkedin.exceptions import ProfileInaccessibleError, ReachedConnectionLimit, SkipProfile
+from linkedin.exceptions import (
+    ProfileInaccessibleError,
+    ReachedConnectionLimit,
+    SkipProfile,
+)
+from linkedin.models import ActionLog
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +39,6 @@ class ConnectStrategy:
 def strategy_for(campaign, qualifiers):
     """Build the right ConnectStrategy based on campaign type."""
     qualifier = qualifiers.get(campaign.pk)
-
-    if campaign.is_freemium:
-        from linkedin.db.deals import create_freemium_deal
-        from linkedin.pipeline.freemium_pool import find_freemium_candidate
-
-        return ConnectStrategy(
-            find_candidate=lambda s: find_freemium_candidate(s, qualifier),
-            pre_connect=lambda s, pid: create_freemium_deal(s, pid),
-            qualifier=qualifier,
-        )
 
     from linkedin.pipeline.pools import find_candidate
 
@@ -104,15 +99,23 @@ def handle_connect(task, session, qualifiers):
             if attempts >= MAX_CONNECT_ATTEMPTS:
                 reason = f"Unreachable: no Connect button after {attempts} attempts"
                 disqualify_lead(public_id)
-                set_profile_state(session, public_id, ProfileState.FAILED.value, reason=reason)
+                set_profile_state(
+                    session, public_id, ProfileState.FAILED.value, reason=reason
+                )
                 logger.warning("Disqualified %s — %s", public_id, reason)
             else:
                 set_profile_state(session, public_id, new_state.value)
-                logger.debug("%s: connect attempt %d/%d — no button found", public_id, attempts, MAX_CONNECT_ATTEMPTS)
+                logger.debug(
+                    "%s: connect attempt %d/%d — no button found",
+                    public_id,
+                    attempts,
+                    MAX_CONNECT_ATTEMPTS,
+                )
         else:
             set_profile_state(session, public_id, new_state.value)
             session.linkedin_profile.record_action(
-                ActionLog.ActionType.CONNECT, session.campaign,
+                ActionLog.ActionType.CONNECT,
+                session.campaign,
             )
 
     except ReachedConnectionLimit as e:
@@ -120,8 +123,12 @@ def handle_connect(task, session, qualifiers):
         session.linkedin_profile.mark_exhausted(ActionLog.ActionType.CONNECT)
     except ProfileInaccessibleError as e:
         logger.warning("Profile inaccessible — marking FAILED: %s", e)
-        set_profile_state(session, public_id, ProfileState.FAILED.value,
-                          reason=f"Profile inaccessible: {e}")
+        set_profile_state(
+            session,
+            public_id,
+            ProfileState.FAILED.value,
+            reason=f"Profile inaccessible: {e}",
+        )
     except SkipProfile as e:
         logger.warning("Skipping %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)

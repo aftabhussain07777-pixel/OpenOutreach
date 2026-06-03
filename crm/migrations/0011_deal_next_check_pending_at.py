@@ -1,6 +1,7 @@
 """Add ``Deal.next_check_pending_at``; backfill existing PENDING deals to now()
 so the first post-deploy planning cycle re-picks them up immediately.
 """
+
 from django.db import migrations, models
 from django.utils import timezone
 
@@ -19,7 +20,7 @@ def clear_next_check_pending_at(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("crm", "0009_outcome"),
+        ("crm", "0010_add_unanswered_follow_up_count"),
     ]
 
     operations = [

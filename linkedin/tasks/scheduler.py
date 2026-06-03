@@ -26,12 +26,14 @@ moves forward in three layers:
    and calls each planner per campaign. The daemon invokes it on startup
    and whenever the queue has no ready task.
 """
+
 from __future__ import annotations
 
 import datetime
 import logging
 import random
-from datetime import datetime as Datetime, timedelta
+from datetime import datetime as Datetime
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.utils import timezone
@@ -69,10 +71,18 @@ def _working_intervals(start, end) -> list[tuple]:
     last_day = local_end.date()
     while day <= last_day:
         day_active_start = Datetime(
-            day.year, day.month, day.day, ACTIVE_START_HOUR, tzinfo=tz,
+            day.year,
+            day.month,
+            day.day,
+            ACTIVE_START_HOUR,
+            tzinfo=tz,
         )
         day_active_end = Datetime(
-            day.year, day.month, day.day, ACTIVE_END_HOUR, tzinfo=tz,
+            day.year,
+            day.month,
+            day.day,
+            ACTIVE_END_HOUR,
+            tzinfo=tz,
         )
         s = max(day_active_start, local_start)
         e = min(day_active_end, local_end)
@@ -139,17 +149,21 @@ def _has_pending(task_type: "Task.TaskType", campaign_id: int) -> bool:
     ).exists()
 
 
-def _create_lazy_slots(task_type: "Task.TaskType", campaign_id: int, times: list) -> int:
+def _create_lazy_slots(
+    task_type: "Task.TaskType", campaign_id: int, times: list
+) -> int:
     if not times:
         return 0
-    Task.objects.bulk_create([
-        Task(
-            task_type=task_type,
-            scheduled_at=t,
-            payload={"campaign_id": campaign_id},
-        )
-        for t in times
-    ])
+    Task.objects.bulk_create(
+        [
+            Task(
+                task_type=task_type,
+                scheduled_at=t,
+                payload={"campaign_id": campaign_id},
+            )
+            for t in times
+        ]
+    )
     return len(times)
 
 
@@ -182,15 +196,15 @@ def plan_connect_window(session, campaign) -> int:
     profile = session.linkedin_profile
     n = max(0, profile.connect_daily_limit - profile._daily_count("connect"))
 
-    if campaign.is_freemium:
-        n = int(n * campaign.action_fraction)
-
     created = _plan_slots(Task.TaskType.CONNECT, campaign.pk, n)
     if created:
         logger.info(
             "[%s] planned %d connect slots over next 24h — 1 fires now, "
             "%d Poisson-spaced (daily=%d)",
-            campaign, created, max(0, created - 1), profile.connect_daily_limit,
+            campaign,
+            created,
+            max(0, created - 1),
+            profile.connect_daily_limit,
         )
     return created
 
@@ -202,14 +216,19 @@ def plan_follow_up_window(session, campaign) -> int:
         return 0
 
     profile = session.linkedin_profile
-    daily_remaining = max(0, profile.follow_up_daily_limit - profile._daily_count("follow_up"))
+    daily_remaining = max(
+        0, profile.follow_up_daily_limit - profile._daily_count("follow_up")
+    )
 
     created = _plan_slots(Task.TaskType.FOLLOW_UP, campaign.pk, daily_remaining)
     if created:
         logger.info(
             "[%s] planned %d follow_up slots over next 24h — 1 fires now, "
             "%d Poisson-spaced (daily=%d)",
-            campaign, created, max(0, created - 1), daily_remaining,
+            campaign,
+            created,
+            max(0, created - 1),
+            daily_remaining,
         )
     return created
 
@@ -236,7 +255,11 @@ def plan_check_pending_window(session, campaign) -> int:
         logger.info(
             "[%s] planned %d check_pending slots over next 24h — 1 fires now, "
             "%d Poisson-spaced (due=%d, cap=%d)",
-            campaign, created, max(0, created - 1), n_due, CHECK_PENDING_DAILY_CAP,
+            campaign,
+            created,
+            max(0, created - 1),
+            n_due,
+            CHECK_PENDING_DAILY_CAP,
         )
     return created
 
@@ -248,7 +271,10 @@ def seconds_until_tomorrow() -> float:
     """Seconds until 00:00 local time — used for daily rate-limit waits."""
     now = timezone.now()
     tomorrow = (now + datetime.timedelta(days=1)).replace(
-        hour=0, minute=0, second=0, microsecond=0,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
     return (tomorrow - now).total_seconds()
 
