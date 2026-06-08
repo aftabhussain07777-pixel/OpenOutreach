@@ -279,6 +279,33 @@ def seconds_until_tomorrow() -> float:
     return (tomorrow - now).total_seconds()
 
 
+def enqueue_follow_up(
+    campaign_id: int, public_id: str | None = None, delay_seconds: float = 0
+) -> None:
+    """Schedule a single follow-up task for *campaign_id*.
+
+    The task fires after *delay_seconds* (default: immediately).  The handler
+    will resolve the specific deal at execution time via the eligibility query
+    (``_next_followup_deal``), so *public_id* is informational only and is NOT
+    used for targeting — it avoids redundant re-enqueues of the same deal.
+    """
+    now = timezone.now()
+    Task.objects.create(
+        task_type=Task.TaskType.FOLLOW_UP,
+        scheduled_at=now + timedelta(seconds=delay_seconds),
+        payload={
+            "campaign_id": campaign_id,
+            "public_id": public_id,
+        },
+    )
+    logger.debug(
+        "enqueued follow_up for campaign=%s (delay=%ds, public_id=%s)",
+        campaign_id,
+        delay_seconds,
+        public_id,
+    )
+
+
 # ── State-transition hook ─────────────────────────────────────────────
 
 

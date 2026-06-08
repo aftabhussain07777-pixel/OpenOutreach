@@ -1,5 +1,6 @@
 # linkedin/tasks/follow_up.py
 """Follow-up task — runs the agentic follow-up for one eligible CONNECTED deal."""
+
 from __future__ import annotations
 
 import logging
@@ -10,6 +11,7 @@ from termcolor import colored
 
 from linkedin.enums import ProfileState
 from linkedin.models import ActionLog
+from linkedin.tasks.scheduler import enqueue_follow_up
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +21,11 @@ MIN_DAYS_PER_UNANSWERED = 3
 
 # Maximum number of consecutive unanswered follow-ups before auto-completing
 MAX_UNANSWERED_FOLLOW_UPS = 3
+
+# Minimum hours between follow-up messages (safety floor — LLM should already
+# respect this via the prompt, but we enforce it at the code level).
+# The prompt instructs 2-8h for active conversations and 24-48h for async.
+MIN_FOLLOW_UP_HOURS = 2
 
 
 def _build_send_profile(deal) -> dict:
@@ -32,7 +39,6 @@ def _build_send_profile(deal) -> dict:
 
 def _too_soon_to_nudge(deal) -> bool:
     """Wait ``unanswered_count * MIN_DAYS_PER_UNANSWERED`` days between nudges."""
-    from chat.models import ChatMessage
     from django.contrib.contenttypes.models import ContentType
 
     from chat.models import ChatMessage
@@ -101,15 +107,13 @@ def _has_manual_messages_recently(deal, session) -> bool:
         seconds=TIMESTAMP_TOLERANCE_SECONDS
     )
 
-    nearby = (
-        ActionLog.objects.filter(
-            linkedin_profile=session.linkedin_profile,
-            campaign=deal.campaign,
-            action_type=ActionLog.ActionType.FOLLOW_UP,
-            created_at__gte=window_start,
-            created_at__lte=window_end,
-        ).exists()
-    )
+    nearby = ActionLog.objects.filter(
+        linkedin_profile=session.linkedin_profile,
+        campaign=deal.campaign,
+        action_type=ActionLog.ActionType.FOLLOW_UP,
+        created_at__gte=window_start,
+        created_at__lte=window_end,
+    ).exists()
 
     if not nearby:
         logger.debug(
@@ -202,13 +206,17 @@ def handle_follow_up(task, session, qualifiers):
 
     deal = _next_followup_deal(campaign)
     if deal is None:
-        logger.info("[%s] follow_up: no eligible CONNECTED deal — slot skipped", campaign)
+        logger.info(
+            "[%s] follow_up: no eligible CONNECTED deal — slot skipped", campaign
+        )
         return
 
     public_id = deal.lead.public_identifier
     logger.info(
         "[%s] %s %s",
-        campaign, colored("▶ follow_up", "green", attrs=["bold"]), public_id,
+        campaign,
+        colored("▶ follow_up", "green", attrs=["bold"]),
+        public_id,
     )
 
     # Check if we've reached the max unanswered follow-ups limit
@@ -230,6 +238,7 @@ def handle_follow_up(task, session, qualifiers):
     # fresh ChatMessage data including any manual messages the user sent
     # directly on LinkedIn.
     from linkedin.db.chat import sync_conversation
+
     sync_conversation(session, public_id)
 
     # Conservative pause: check for manual messages (timestamp mismatch).
@@ -243,7 +252,7 @@ def handle_follow_up(task, session, qualifiers):
             public_id,
         )
         _notify_manual_intervention(session, deal, public_id)
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=7 * 24 * 3600)
+        enqueue_follow_up(campaign.pk, public_id, delay_seconds=7 * 24 * 3600)
         return
 
     decision = run_follow_up_agent(session, deal)
@@ -251,7 +260,9 @@ def handle_follow_up(task, session, qualifiers):
     profile = _build_send_profile(deal)
 
     if decision.action == "send_message":
-        logger.info("[%s] follow_up message for %s: %s", campaign, public_id, decision.message)
+        logger.info(
+            "[%s] follow_up message for %s: %s", campaign, public_id, decision.message
+        )
         sent = send_raw_message(session, profile, decision.message, source="ai")
         if not sent:
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
@@ -267,14 +278,16 @@ def handle_follow_up(task, session, qualifiers):
         # Increment unanswered follow-up counter
         deal.unanswered_follow_up_count += 1
         deal.save(update_fields=["unanswered_follow_up_count"])
-        enqueue_follow_up(
-            campaign_id, public_id, delay_seconds=decision.follow_up_hours * 3600
-        )
-        
+        # Safety floor: never follow up faster than MIN_FOLLOW_UP_HOURS,
+        # even if the LLM returns a tiny value.
+        delay_hours = max(decision.follow_up_hours, MIN_FOLLOW_UP_HOURS)
+        enqueue_follow_up(campaign.pk, public_id, delay_seconds=delay_hours * 3600)
+
         # Persist the outgoing message locally and bump update_date so the
         # next slot's eligibility query respects the cooldown and moves
         # this deal to the back of the queue.
         from linkedin.db.chat import sync_conversation
+
         try:
             sync_conversation(session, public_id)
         except Exception:
@@ -282,8 +295,15 @@ def handle_follow_up(task, session, qualifiers):
         deal.save()
 
     elif decision.action == "mark_completed":
-        set_profile_state(session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome)
-        logger.info("[%s] follow_up completed for %s: outcome=%s", campaign, public_id, decision.outcome)
+        set_profile_state(
+            session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome
+        )
+        logger.info(
+            "[%s] follow_up completed for %s: outcome=%s",
+            campaign,
+            public_id,
+            decision.outcome,
+        )
 
     elif decision.action == "wait":
         # Bump update_date so the eligibility query cycles to a different deal
