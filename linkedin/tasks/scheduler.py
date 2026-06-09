@@ -236,29 +236,59 @@ def plan_follow_up_window(session, campaign) -> int:
 def plan_check_pending_window(session, campaign) -> int:
     """Plan the next 24h of check_pending slots for *campaign*. Slot count
     matches the PENDING deals whose backoff has expired (or expires
-    within the horizon), capped by ``CHECK_PENDING_DAILY_CAP``."""
+    within the horizon), capped by ``CHECK_PENDING_DAILY_CAP``.
+
+    Unlike connect/follow-up, an **immediate** slot is only created when a
+    deal is already past-due *now*. If all due deals are in the future
+    (backoff not yet expired), all slots are Poisson-spaced — this prevents
+    an infinite loop where the planner creates an immediate slot, the
+    handler finds nothing due, and reconcile re-plans immediately.
+    """
     from crm.models import Deal
 
     if _has_pending(Task.TaskType.CHECK_PENDING, campaign.pk):
         return 0
 
     now = timezone.now()
-    n_due = Deal.objects.filter(
+    horizon = now + timedelta(hours=24)
+
+    # Separate counts: past-due (ready now) vs. future-due (will become ready).
+    n_past_due = Deal.objects.filter(
         campaign_id=campaign.pk,
         state=ProfileState.PENDING,
-        next_check_pending_at__lte=now + timedelta(hours=24),
+        next_check_pending_at__lte=now,
     ).count()
-    n = min(n_due, CHECK_PENDING_DAILY_CAP)
+    n_future_due = Deal.objects.filter(
+        campaign_id=campaign.pk,
+        state=ProfileState.PENDING,
+        next_check_pending_at__gt=now,
+        next_check_pending_at__lte=horizon,
+    ).count()
 
-    created = _plan_slots(Task.TaskType.CHECK_PENDING, campaign.pk, n)
+    n_total = n_past_due + n_future_due
+    n = min(n_total, CHECK_PENDING_DAILY_CAP)
+    if n <= 0:
+        return 0
+
+    # Always skip 1 immediate slot if no deal is past-due right now —
+    # otherwise the slot fires, finds nothing, reconcile re-plans, loop.
+    if n_past_due > 0:
+        times = [now] + poisson_slot_times(now, n - 1)
+    else:
+        # All slots are in the future — Poisson-space all n across the window.
+        times = poisson_slot_times(now, n)
+
+    created = _create_lazy_slots(Task.TaskType.CHECK_PENDING, campaign.pk, times)
     if created:
+        n_immediate = 1 if n_past_due > 0 else 0
         logger.info(
-            "[%s] planned %d check_pending slots over next 24h — 1 fires now, "
-            "%d Poisson-spaced (due=%d, cap=%d)",
+            "[%s] planned %d check_pending slots over next 24h — "
+            "%d fires now, %d Poisson-spaced (due=%d, cap=%d)",
             campaign,
             created,
-            max(0, created - 1),
-            n_due,
+            n_immediate,
+            created - n_immediate,
+            n_total,
             CHECK_PENDING_DAILY_CAP,
         )
     return created
