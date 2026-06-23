@@ -6,6 +6,7 @@ oldest-due PENDING deal at execution time. If the recheck leaves the
 deal in PENDING, the backoff is doubled and ``next_check_pending_at``
 re-stamped via the ``on_deal_state_entered`` hook.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,7 @@ from termcolor import colored
 
 from linkedin.db.deals import set_profile_state
 from linkedin.enums import ProfileState
-from linkedin.exceptions import SkipProfile
+from linkedin.exceptions import ProfileInaccessibleError, SkipProfile
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ def _next_due_pending_deal(campaign):
 
 def _double_backoff(deal) -> float:
     from linkedin.conf import CAMPAIGN_CONFIG
+
     current = deal.backoff_hours or CAMPAIGN_CONFIG["check_pending_recheck_after_hours"]
     deal.backoff_hours = current * 2
     deal.save(update_fields=["backoff_hours"])
@@ -55,7 +57,9 @@ def handle_check_pending(task, session, qualifiers):
     public_id = deal.lead.public_identifier
     logger.info(
         "[%s] %s %s",
-        campaign, colored("▶ check_pending", "magenta", attrs=["bold"]), public_id,
+        campaign,
+        colored("▶ check_pending", "magenta", attrs=["bold"]),
+        public_id,
     )
 
     profile = deal.lead.to_profile_dict()
@@ -65,6 +69,10 @@ def handle_check_pending(task, session, qualifiers):
         new_state = get_connection_status(session, profile_for_status)
     except SkipProfile as e:
         logger.warning("Skipping %s: %s", public_id, e)
+        set_profile_state(session, public_id, ProfileState.FAILED.value)
+        return
+    except ProfileInaccessibleError as e:
+        logger.warning("Profile inaccessible %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)
         return
 
