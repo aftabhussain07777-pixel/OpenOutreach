@@ -1,10 +1,10 @@
 # linkedin/actions/connect.py
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
 
+from linkedin.browser.nav import dump_page_html, find_top_card
 from linkedin.enums import ProfileState
-from linkedin.exceptions import SkipProfile, ReachedConnectionLimit
-from linkedin.browser.nav import find_top_card, dump_page_html
+from linkedin.exceptions import ReachedConnectionLimit, SkipProfile
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +16,7 @@ SELECTORS = {
         'button:has(span:text-is("Connect")):visible'
     ),
     "error_toast": 'div[data-test-artdeco-toast-item-type="error"]',
+    "withdrawn_error": 'p:text-is("Invitation not sent"), p:has-text("resend an invitation")',
     "more_button": (
         'button[aria-label="More"]:visible, '
         'button[id*="overflow"]:visible, '
@@ -31,12 +32,13 @@ SELECTORS = {
         'span[role="button"]:text-is("Connect")'
     ),
     "send_now": 'button:has-text("Send now"), button[aria-label*="Send without"], button[aria-label*="Send invitation"]',
+    "dialog_close": 'button[aria-label="Close"]:visible',
 }
 
 
 def send_connection_request(
-        session: "AccountSession",
-        profile: Dict[str, Any],
+    session: "AccountSession",
+    profile: Dict[str, Any],
 ) -> ProfileState:
     """
     Sends a LinkedIn connection request WITHOUT a note (fastest & safest).
@@ -44,11 +46,14 @@ def send_connection_request(
     Assumes the profile page is already loaded (caller navigates via
     ``get_connection_status`` or ``visit_profile`` beforehand).
     """
-    public_identifier = profile.get('public_identifier')
+    public_identifier = profile.get("public_identifier")
 
     # Send invitation WITHOUT note (current active flow)
     if not _connect_direct(session) and not _connect_via_more(session):
-        logger.debug("Connect button not found for %s — staying at current stage", public_identifier)
+        logger.debug(
+            "Connect button not found for %s — staying at current stage",
+            public_identifier,
+        )
         dump_page_html(session, profile)
         return ProfileState.QUALIFIED
 
@@ -111,6 +116,18 @@ def _click_without_note(session):
     """Click flow: sends connection request instantly without note."""
     session.wait()
 
+    # Check for "Invitation not sent" error (manually withdrawn request)
+    withdrawn = session.page.locator(SELECTORS["withdrawn_error"])
+    if withdrawn.count() > 0:
+        msg = withdrawn.first.inner_text().strip()
+        logger.warning("Withdrawn invitation error: %s", msg)
+        # Close the dialog so the page is left in a clean state
+        close_btn = session.page.locator(SELECTORS["dialog_close"])
+        if close_btn.count() > 0:
+            close_btn.first.click()
+            session.wait()
+        raise SkipProfile(msg)
+
     # Click "Send now" / "Send without a note"
     send_btn = session.page.locator(SELECTORS["send_now"])
     send_btn.first.click(force=True)
@@ -119,11 +136,13 @@ def _click_without_note(session):
 
 
 if __name__ == "__main__":
-    from linkedin.browser.registry import cli_parser, cli_session
     from linkedin.actions.status import get_connection_status
+    from linkedin.browser.registry import cli_parser, cli_session
 
     parser = cli_parser("Send a LinkedIn connection request")
-    parser.add_argument("--profile", required=True, help="Public identifier of the target profile")
+    parser.add_argument(
+        "--profile", required=True, help="Public identifier of the target profile"
+    )
     args = parser.parse_args()
     session = cli_session(args)
 
