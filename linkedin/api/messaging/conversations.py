@@ -1,13 +1,33 @@
 # linkedin/api/messaging/conversations.py
 """Retrieve conversations and messages via Voyager Messaging GraphQL API."""
+
 import logging
 
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from playwright._impl._errors import Error as PlaywrightError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from linkedin.api.client import PlaywrightLinkedinAPI
-from linkedin.api.messaging.utils import encode_urn, check_response
+from linkedin.api.messaging.utils import check_response, encode_urn
 
 logger = logging.getLogger(__name__)
+
+
+def _retryable(exception: BaseException) -> bool:
+    """Retry on IOError (HTTP/network) or Playwright navigation errors."""
+    if isinstance(exception, IOError):
+        return True
+    if isinstance(exception, PlaywrightError) and (
+        "Execution context was destroyed" in str(exception)
+        or "navigation" in str(exception).lower()
+    ):
+        return True
+    return False
+
 
 _GRAPHQL_BASE = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql"
 _CONVERSATIONS_QUERY_ID = "messengerConversations.0d5e6781bbee71c3e51c8843c6519f48"
@@ -23,7 +43,7 @@ def _graphql_headers(api: PlaywrightLinkedinAPI) -> dict:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=30),
-    retry=retry_if_exception_type(IOError),
+    retry=retry_if_exception_type(_retryable),
     reraise=True,
 )
 def fetch_conversations(api: PlaywrightLinkedinAPI, mailbox_urn: str) -> dict:
@@ -41,7 +61,7 @@ def fetch_conversations(api: PlaywrightLinkedinAPI, mailbox_urn: str) -> dict:
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=30),
-    retry=retry_if_exception_type(IOError),
+    retry=retry_if_exception_type(_retryable),
     reraise=True,
 )
 def fetch_messages(api: PlaywrightLinkedinAPI, conversation_urn: str) -> dict:
@@ -58,11 +78,19 @@ def fetch_messages(api: PlaywrightLinkedinAPI, conversation_urn: str) -> dict:
 
 if __name__ == "__main__":
     import json
+
     from linkedin.browser.registry import cli_parser, cli_session
 
     parser = cli_parser("Fetch raw Voyager messaging data")
-    parser.add_argument("--conversations", action="store_true", help="List recent conversations")
-    parser.add_argument("--messages", default=None, metavar="CONVERSATION_URN", help="Fetch messages for a conversation URN")
+    parser.add_argument(
+        "--conversations", action="store_true", help="List recent conversations"
+    )
+    parser.add_argument(
+        "--messages",
+        default=None,
+        metavar="CONVERSATION_URN",
+        help="Fetch messages for a conversation URN",
+    )
     args = parser.parse_args()
     session = cli_session(args)
     session.ensure_browser()
@@ -72,7 +100,11 @@ if __name__ == "__main__":
     if args.conversations:
         mailbox_urn = session.self_profile["urn"]
         raw = fetch_conversations(api, mailbox_urn)
-        elements = raw.get("data", {}).get("messengerConversationsBySyncToken", {}).get("elements", [])
+        elements = (
+            raw.get("data", {})
+            .get("messengerConversationsBySyncToken", {})
+            .get("elements", [])
+        )
         logger.info("Got %d conversations:", len(elements))
         for conv in elements:
             urn = conv.get("entityUrn", "")

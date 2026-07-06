@@ -318,7 +318,29 @@ def enqueue_follow_up(
     will resolve the specific deal at execution time via the eligibility query
     (``_next_followup_deal``), so *public_id* is informational only and is NOT
     used for targeting — it avoids redundant re-enqueues of the same deal.
+
+    When *public_id* is provided, this is a no-op if a PENDING follow_up task
+    already exists for the same ``(campaign_id, public_id)`` — prevents
+    duplicate 7d-delayed tasks when multiple follow_up slots fire for the
+    same deal before any of them takes effect.
     """
+    # Avoid duplicate enqueues for the same (campaign, public_id).
+    if public_id:
+        exists = Task.objects.filter(
+            task_type=Task.TaskType.FOLLOW_UP,
+            status=Task.Status.PENDING,
+            payload__campaign_id=campaign_id,
+            payload__public_id=public_id,
+        ).exists()
+        if exists:
+            logger.debug(
+                "enqueue_follow_up: task already pending for campaign=%s, "
+                "public_id=%s — skipping",
+                campaign_id,
+                public_id,
+            )
+            return
+
     now = timezone.now()
     Task.objects.create(
         task_type=Task.TaskType.FOLLOW_UP,

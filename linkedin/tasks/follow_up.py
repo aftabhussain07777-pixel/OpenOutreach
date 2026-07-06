@@ -107,9 +107,13 @@ def _has_manual_messages_recently(deal, session) -> bool:
         seconds=TIMESTAMP_TOLERANCE_SECONDS
     )
 
+    # NOTE: No campaign filter here — when a user changes a campaign,
+    # the AI-sent message's ActionLog was created under the *old*
+    # campaign and would not be found, causing a false positive "manual"
+    # detection.  Manual-ness is about whether a person typed the
+    # message, which is campaign-independent.
     nearby = ActionLog.objects.filter(
         linkedin_profile=session.linkedin_profile,
-        campaign=deal.campaign,
         action_type=ActionLog.ActionType.FOLLOW_UP,
         created_at__gte=window_start,
         created_at__lte=window_end,
