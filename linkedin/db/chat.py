@@ -183,6 +183,11 @@ def _detect_message_source(session, lead, delivered_at) -> str:
     This keeps ``source`` accurate for analytics / admin display but is NOT
     used for manual-intervention detection — that is done via timestamp
     comparison in :func:`~linkedin.tasks.follow_up._has_manual_messages_recently`.
+
+    NOTE: No campaign filter here — when a user changes a campaign, old
+    ActionLogs are campaign-scoped and wouldn't be found, causing the
+    source to be incorrectly set to "manual".  See the same comment in
+    ``follow_up._has_manual_messages_recently``.
     """
     from datetime import timedelta
 
@@ -198,7 +203,6 @@ def _detect_message_source(session, lead, delivered_at) -> str:
 
         action_log = ActionLog.objects.filter(
             linkedin_profile=session.linkedin_profile,
-            campaign=session.campaign,
             action_type=ActionLog.ActionType.FOLLOW_UP,
             created_at__gte=recent_time,
             created_at__lte=future_time,

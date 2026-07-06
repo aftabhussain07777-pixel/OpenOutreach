@@ -256,6 +256,34 @@ def handle_follow_up(task, session, qualifiers):
             public_id,
         )
         _notify_manual_intervention(session, deal, public_id)
+
+        # Bump update_date so _next_followup_deal cycles past this deal
+        # for any remaining tasks in the current planner batch.
+        deal.save()
+
+        # Increment unanswered counter so repeated manual-skips eventually
+        # hit MAX_UNANSWERED_FOLLOW_UPS and auto-complete the deal — this
+        # breaks the indefinite 7d re-enqueue cycle.  We also re-check the
+        # cap immediately in case it was already at the threshold.
+        deal.unanswered_follow_up_count += 1
+        if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
+            logger.info(
+                "[%s] follow_up %s: max manual-skips reached (%d) — "
+                "marking as unresponsive",
+                session.campaign,
+                public_id,
+                MAX_UNANSWERED_FOLLOW_UPS,
+            )
+            set_profile_state(
+                session,
+                public_id,
+                ProfileState.COMPLETED.value,
+                outcome="unresponsive",
+            )
+            return
+
+        deal.save(update_fields=["unanswered_follow_up_count"])
+
         enqueue_follow_up(campaign.pk, public_id, delay_seconds=7 * 24 * 3600)
         return
 
