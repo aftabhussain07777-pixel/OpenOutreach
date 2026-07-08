@@ -2,6 +2,8 @@
 import logging
 from typing import Any, Dict
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
 from linkedin.browser.nav import dump_page_html, find_top_card
 from linkedin.enums import ProfileState
 from linkedin.exceptions import ReachedConnectionLimit, SkipProfile
@@ -79,8 +81,8 @@ def _connect_direct(session):
     if direct.count() == 0:
         return False
 
-    direct.first.click()
-    logger.debug("Clicked direct 'Connect' button")
+    direct.first.dispatchEvent("click")
+    logger.debug("Dispatched click on direct 'Connect' button")
 
     error = session.page.locator(SELECTORS["error_toast"])
     if error.count() > 0:
@@ -108,8 +110,8 @@ def _connect_via_more(session):
     connect_option = page.locator(SELECTORS["connect_option"])
     if connect_option.count() == 0:
         return False
-    connect_option.first.click()
-    logger.debug("Used 'More → Connect' flow")
+    connect_option.first.dispatchEvent("click")
+    logger.debug("Dispatched click on 'More → Connect' option")
 
     return True
 
@@ -117,6 +119,19 @@ def _connect_via_more(session):
 def _click_without_note(session):
     """Click flow: sends connection request instantly without note."""
     session.wait()
+
+    # Wait for the send-invite modal to appear after clicking Connect.
+    # If it doesn't appear within 15 seconds, the click didn't register —
+    # skip this lead instead of burning 30s on the send-now locator.
+    modal = session.page.locator(".send-invite")
+    try:
+        modal.wait_for(state="visible", timeout=15_000)
+    except PlaywrightTimeoutError:
+        logger.warning("Connect modal did not appear after clicking Connect")
+        dump_page_html(
+            session, {"public_identifier": "unknown"}, category="connect_no_modal"
+        )
+        raise SkipProfile("Connect modal did not appear")
 
     # Check for email verification popup — LinkedIn asks for the lead's email
     # to confirm you know them. We don't have that, so skip this lead.
