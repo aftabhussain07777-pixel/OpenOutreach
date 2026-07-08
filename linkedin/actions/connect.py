@@ -33,6 +33,8 @@ SELECTORS = {
     ),
     "send_now": 'button:has-text("Send now"), button[aria-label*="Send without"], button[aria-label*="Send invitation"]',
     "dialog_close": 'button[aria-label="Close"]:visible',
+    "email_verify_modal": 'div[data-test-modal].send-invite input[name="email"]:visible',
+    "email_verify_dismiss": 'button[aria-label="Dismiss"]:visible',
 }
 
 
@@ -115,6 +117,17 @@ def _connect_via_more(session):
 def _click_without_note(session):
     """Click flow: sends connection request instantly without note."""
     session.wait()
+
+    # Check for email verification popup — LinkedIn asks for the lead's email
+    # to confirm you know them. We don't have that, so skip this lead.
+    email_verify = session.page.locator(SELECTORS["email_verify_modal"])
+    if email_verify.count() > 0:
+        logger.warning("Email verification required — dismissing and skipping lead")
+        dismiss_btn = session.page.locator(SELECTORS["email_verify_dismiss"])
+        if dismiss_btn.count() > 0:
+            dismiss_btn.first.click()
+            session.wait()
+        raise SkipProfile("Email verification required to connect with this lead")
 
     # Check for "Invitation not sent" error (manually withdrawn request)
     withdrawn = session.page.locator(SELECTORS["withdrawn_error"])
