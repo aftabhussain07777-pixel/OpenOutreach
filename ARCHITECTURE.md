@@ -52,17 +52,18 @@ Persistent queue backed by `Task` model. Worker loop in `daemon.py`: `seconds_un
 
 Task rows are **lazy**: `payload = {"campaign_id": <id>}` only — no `public_id`, no deal reference. The handler resolves a concrete target at execution time via a single eligibility query. Slot creation is centralized in `linkedin/tasks/scheduler.py`; no other module inserts Task rows. The module is organized in three layers:
 
-1. **Per-type planners** — `plan_connect_window`, `plan_follow_up_window`, `plan_check_pending_window`. Each, when no PENDING task of its type exists for a campaign, computes the right slot count `n` for the next 24h and inserts `1 immediate + (n-1) Poisson-spaced` lazy rows. The leading immediate slot kills the cold-start ramp (without it the first action would sit `T/n` away on average — ~72 min for a 20/day campaign).
+1. **Per-type planners** — `plan_connect_window`, `plan_follow_up_window`, `plan_check_pending_window`, `plan_check_messages_window`. Each, when no PENDING task of its type exists for a campaign, computes the right slot count `n` for the next 24h and inserts `1 immediate + (n-1) Poisson-spaced` lazy rows. The leading immediate slot kills the cold-start ramp (without it the first action would sit `T/n` away on average — ~72 min for a 20/day campaign).
 2. **State-transition hook** — `on_deal_state_entered(deal)`. For PENDING transitions, stamps `deal.next_check_pending_at = now + backoff_hours`. All other transitions (CONNECTED included) are no-ops.
 3. **`reconcile(session)`** — Recovers stale RUNNING tasks, then iterates campaigns × planners. Daemon calls it on startup and whenever the queue has no ready task.
 
 Per-type recompute trigger: when a type's PENDING queue is empty for a campaign, the next idle reconcile re-plans only that type's next 24h window. No global rollover, no leftover-slot reconciliation. `AuthenticationError` (401) triggers `session.reauthenticate()` then marks the task FAILED; the planner picks the type back up on the next idle cycle.
 
-Three task types (handlers in `linkedin/tasks/`, signature: `handle_*(task, session, qualifiers)`):
+Four task types (handlers in `linkedin/tasks/`, signature: `handle_*(task, session, qualifiers)`):
 
 1. **`handle_connect`** — Unified via `ConnectStrategy` dataclass. Regular: `find_candidate()` from `pools.py`; freemium: `find_freemium_candidate()`. Unreachable detection after `MAX_CONNECT_ATTEMPTS` (3). No self-rescheduling — the planner owns timing.
 2. **`handle_check_pending`** — Eligibility query: oldest PENDING deal in the campaign with `next_check_pending_at <= now`. If none, mark task DONE. On still-PENDING outcome, double `backoff_hours` and re-stamp `next_check_pending_at`.
 3. **`handle_follow_up`** — Eligibility query: oldest CONNECTED deal in the campaign with no recent outgoing message. If none, mark task DONE. Otherwise call `run_follow_up_agent()` (returns `FollowUpDecision`: `send_message`/`mark_completed`/`wait`) and execute deterministically.
+4. **`handle_check_messages`** — One slot per campaign per day. Scans all CONNECTED deals, syncs conversations, and replies to any with new incoming messages from the lead. Uses `run_follow_up_agent()` for reply generation, then schedules the next follow-up at the LLM-recommended interval (2-8h floor). Resets `unanswered_follow_up_count` when lead replies.
 
 ## Qualification ML Pipeline
 

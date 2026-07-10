@@ -233,6 +233,27 @@ def plan_follow_up_window(session, campaign) -> int:
     return created
 
 
+def plan_check_messages_window(session, campaign) -> int:
+    """Plan the next 24h of check_messages slots for *campaign*. No-op when a
+    PENDING check_messages task already exists for the campaign.
+
+    Creates one slot per day — the handler scans all CONNECTED deals and
+    replies to any that have new incoming messages from the lead. A single
+    immediate slot on the first plan ensures fresh incoming messages are
+    caught promptly at daemon start.
+    """
+    if _has_pending(Task.TaskType.CHECK_MESSAGES, campaign.pk):
+        return 0
+
+    created = _plan_slots(Task.TaskType.CHECK_MESSAGES, campaign.pk, n=1)
+    if created:
+        logger.info(
+            "[%s] planned 1 check_messages slot — fires now (daily scan)",
+            campaign,
+        )
+    return created
+
+
 def plan_check_pending_window(session, campaign) -> int:
     """Plan the next 24h of check_pending slots for *campaign*. Slot count
     matches the PENDING deals whose backoff has expired (or expires
@@ -392,6 +413,7 @@ _PLANNERS = (
     plan_connect_window,
     plan_follow_up_window,
     plan_check_pending_window,
+    plan_check_messages_window,
 )
 
 

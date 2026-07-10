@@ -23,6 +23,7 @@ from linkedin.diagnostics import failure_diagnostics
 from linkedin.exceptions import AuthenticationError
 from linkedin.ml.qualifier import BayesianQualifier
 from linkedin.models import Task
+from linkedin.tasks.check_messages import handle_check_messages
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
 from linkedin.tasks.follow_up import handle_follow_up
@@ -33,6 +34,7 @@ _HANDLERS = {
     Task.TaskType.CONNECT: handle_connect,
     Task.TaskType.CHECK_PENDING: handle_check_pending,
     Task.TaskType.FOLLOW_UP: handle_follow_up,
+    Task.TaskType.CHECK_MESSAGES: handle_check_messages,
 }
 
 HEARTBEAT_INTERVAL = 300  # 5 minutes
