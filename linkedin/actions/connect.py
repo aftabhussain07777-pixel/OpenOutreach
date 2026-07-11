@@ -81,7 +81,7 @@ def _connect_direct(session):
     if direct.count() == 0:
         return False
 
-    direct.first.dispatchEvent("click")
+    direct.first.dispatch_event("click")
     logger.debug("Dispatched click on direct 'Connect' button")
 
     error = session.page.locator(SELECTORS["error_toast"])
@@ -110,7 +110,7 @@ def _connect_via_more(session):
     connect_option = page.locator(SELECTORS["connect_option"])
     if connect_option.count() == 0:
         return False
-    connect_option.first.dispatchEvent("click")
+    connect_option.first.dispatch_event("click")
     logger.debug("Dispatched click on 'More → Connect' option")
 
     return True
