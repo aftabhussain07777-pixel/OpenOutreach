@@ -237,19 +237,39 @@ def plan_check_messages_window(session, campaign) -> int:
     """Plan the next 24h of check_messages slots for *campaign*. No-op when a
     PENDING check_messages task already exists for the campaign.
 
-    Creates one slot per day — the handler scans all CONNECTED deals and
-    replies to any that have new incoming messages from the lead. A single
-    immediate slot on the first plan ensures fresh incoming messages are
-    caught promptly at daemon start.
+    Creates one slot Poisson-spaced across the next 24h working window (no
+    immediate slot — unlike connect/follow-up, there is no rate-limit or
+    daily-cap to exhaust, so an immediate slot would re-fire on every
+    reconcile cycle, scanning all conversations pointlessly).
+
+    On the very first plan (no completed check_messages task for this
+    campaign), an immediate slot is added so daemon start catches any
+    missed messages right away.
     """
     if _has_pending(Task.TaskType.CHECK_MESSAGES, campaign.pk):
         return 0
 
-    created = _plan_slots(Task.TaskType.CHECK_MESSAGES, campaign.pk, n=1)
+    now = timezone.now()
+    has_ever_run = Task.objects.filter(
+        task_type=Task.TaskType.CHECK_MESSAGES,
+        payload__campaign_id=campaign.pk,
+        status=Task.Status.COMPLETED,
+    ).exists()
+
+    if has_ever_run:
+        # Normal cadence: Poisson-space 1 slot across the next 24h
+        # so it fires roughly once per day.
+        times = poisson_slot_times(now, n=1)
+    else:
+        # First-ever plan: 1 immediate + 0 Poisson-spaced
+        times = [now]
+
+    created = _create_lazy_slots(Task.TaskType.CHECK_MESSAGES, campaign.pk, times)
     if created:
         logger.info(
-            "[%s] planned 1 check_messages slot — fires now (daily scan)",
+            "[%s] planned 1 check_messages slot%s",
             campaign,
+            " (fires now — first run)" if not has_ever_run else "",
         )
     return created
 
