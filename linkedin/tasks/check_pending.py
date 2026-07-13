@@ -17,6 +17,7 @@ from termcolor import colored
 from linkedin.db.deals import set_profile_state
 from linkedin.enums import ProfileState
 from linkedin.exceptions import ProfileInaccessibleError, SkipProfile
+from linkedin.notification import FailureEvent, notify_failure
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,24 @@ def handle_check_pending(task, session, qualifiers):
     except SkipProfile as e:
         logger.warning("Skipping %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)
+        notify_failure(FailureEvent(
+            title="Pending Check — Profile Skipped",
+            detail=f"{public_id}: {e}",
+            campaign=str(campaign),
+            task_type="check_pending",
+            lead=public_id,
+        ))
         return
     except ProfileInaccessibleError as e:
         logger.warning("Profile inaccessible %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)
+        notify_failure(FailureEvent(
+            title="Pending Check — Profile Inaccessible",
+            detail=f"{public_id}: {e}",
+            campaign=str(campaign),
+            task_type="check_pending",
+            lead=public_id,
+        ))
         return
 
     if new_state == ProfileState.PENDING:

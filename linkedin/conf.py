@@ -22,6 +22,13 @@ FIXTURE_PROFILES_DIR = FIXTURE_DIR / "profiles"
 FIXTURE_PAGES_DIR = FIXTURE_DIR / "pages"
 DUMP_PAGES = False
 
+# ----------------------------------------------------------------------
+# Telegram notifications (failure alerts to your phone)
+# Leave blank to disable.
+# ----------------------------------------------------------------------
+TELEGRAM_BOT_TOKEN = "8887475264:AAE7l58sNh-hKAPnIqGv9mR2h_k6Bq8y2j8"
+TELEGRAM_CHAT_ID = "8901396168"
+
 MIN_DELAY = 5
 MAX_DELAY = 8
 

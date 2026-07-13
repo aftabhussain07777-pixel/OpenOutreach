@@ -21,6 +21,7 @@ from linkedin.conf import (
 )
 from linkedin.diagnostics import failure_diagnostics
 from linkedin.exceptions import AuthenticationError
+from linkedin.notification import FailureEvent, notify_failure
 from linkedin.ml.qualifier import BayesianQualifier
 from linkedin.models import Task
 from linkedin.tasks.check_messages import handle_check_messages
@@ -256,6 +257,12 @@ def run_daemon(session):
         len(campaigns),
     )
 
+    campaign_names = ", ".join(str(c) for c in campaigns)
+    notify_failure(FailureEvent(
+        title="Daemon Started",
+        detail=f"{len(campaigns)} campaign(s): {campaign_names}",
+    ))
+
     cloud_promo = _CloudPromoRotator(interval=60)
     heartbeat = Heartbeat()
     rhythm = _HumanRhythmBreak(heartbeat)
@@ -316,10 +323,21 @@ def run_daemon(session):
                 handler(task, session, qualifiers)
         except AuthenticationError:
             logger.warning("Session expired during %s — re-authenticating", task)
+            notify_failure(FailureEvent(
+                title="LinkedIn Session Expired",
+                detail="401 Unauthorized — re-authenticating now",
+                campaign=str(campaign),
+                task_type=task.task_type,
+            ))
             try:
                 session.reauthenticate()
             except Exception:
                 logger.exception("Re-authentication failed for %s", task)
+                notify_failure(FailureEvent(
+                    title="Re-authentication Failed",
+                    detail="Could not re-authenticate LinkedIn session",
+                    campaign=str(campaign),
+                ))
             # Either way, mark this task FAILED; reconcile will re-create a
             # fresh task for the deal on the next idle cycle.
             task.mark_failed()
@@ -330,10 +348,21 @@ def run_daemon(session):
                 colored("Daemon stopped — LLM API error", "red", attrs=["bold"])
                 + "\n%s\nCheck llm_provider, ai_model, llm_api_key, and llm_api_base in Admin → Site Configuration.", e,
             )
+            notify_failure(FailureEvent(
+                title="Daemon Halted — LLM API Error",
+                detail=f"{e}\nCheck llm_provider, ai_model, llm_api_key in Site Configuration.",
+                campaign=str(campaign),
+            ))
             return
         except Exception:
             task.mark_failed()
             logger.exception("Task %s failed", task)
+            notify_failure(FailureEvent(
+                title="Task Failed",
+                detail="Unexpected error — check daemon logs for traceback",
+                campaign=str(campaign),
+                task_type=task.task_type,
+            ))
             continue
 
         task.mark_completed()

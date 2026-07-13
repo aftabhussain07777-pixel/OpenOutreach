@@ -23,6 +23,7 @@ from linkedin.exceptions import (
     SkipProfile,
 )
 from linkedin.models import ActionLog
+from linkedin.notification import FailureEvent, notify_failure
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,13 @@ def handle_connect(task, session, qualifiers):
                     session, public_id, ProfileState.FAILED.value, reason=reason
                 )
                 logger.warning("Disqualified %s — %s", public_id, reason)
+                notify_failure(FailureEvent(
+                    title="Lead Disqualified — No Connect Button",
+                    detail=f"{public_id}: no Connect button after {attempts} attempts",
+                    campaign=str(session.campaign),
+                    task_type="connect",
+                    lead=public_id,
+                ))
             else:
                 set_profile_state(session, public_id, new_state.value)
                 logger.debug(
@@ -121,6 +129,12 @@ def handle_connect(task, session, qualifiers):
     except ReachedConnectionLimit as e:
         logger.warning("Rate limited: %s", e)
         session.linkedin_profile.mark_exhausted(ActionLog.ActionType.CONNECT)
+        notify_failure(FailureEvent(
+            title="LinkedIn Connection Limit Reached",
+            detail=str(e),
+            campaign=str(session.campaign),
+            task_type="connect",
+        ))
     except ProfileInaccessibleError as e:
         logger.warning("Profile inaccessible — marking FAILED: %s", e)
         set_profile_state(
@@ -129,6 +143,13 @@ def handle_connect(task, session, qualifiers):
             ProfileState.FAILED.value,
             reason=f"Profile inaccessible: {e}",
         )
+        notify_failure(FailureEvent(
+            title="Profile Inaccessible",
+            detail=f"{public_id}: {e}",
+            campaign=str(session.campaign),
+            task_type="connect",
+            lead=public_id,
+        ))
     except SkipProfile as e:
         logger.warning("Skipping %s: %s", public_id, e)
         set_profile_state(session, public_id, ProfileState.FAILED.value)

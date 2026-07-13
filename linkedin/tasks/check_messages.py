@@ -26,6 +26,7 @@ from termcolor import colored
 
 from chat.models import ChatMessage
 from linkedin.enums import ProfileState
+from linkedin.notification import FailureEvent, notify_failure
 from linkedin.tasks.follow_up import (
     MAX_UNANSWERED_FOLLOW_UPS,
     MIN_FOLLOW_UP_HOURS,
@@ -203,6 +204,13 @@ def _handle_follow_up_nudge(session, deal, conv=None):
                 "check_messages nudge %s: send failed — moving to QUALIFIED",
                 public_id,
             )
+            notify_failure(FailureEvent(
+                title="Follow-up Nudge Send Failed",
+                detail=f"Nudge to {public_id} failed — deal moved to QUALIFIED",
+                campaign=str(campaign),
+                task_type="check_messages",
+                lead=public_id,
+            ))
             set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
             return
 
@@ -223,6 +231,13 @@ def _handle_follow_up_nudge(session, deal, conv=None):
                 "check_messages nudge: post-send sync failed for %s (best-effort)",
                 public_id,
             )
+            notify_failure(FailureEvent(
+                title="Post-Nudge Sync Failed",
+                detail=f"Conversation sync after nudge failed for {public_id}",
+                campaign=str(campaign),
+                task_type="check_messages",
+                lead=public_id,
+            ))
         deal.save()  # bump update_date
 
     elif decision.action == "mark_completed":
@@ -423,9 +438,16 @@ def handle_check_messages(task, session, qualifiers):
             sent = send_raw_message(session, profile, decision.message, source="ai")
             if not sent:
                 logger.warning(
-                    "check_messages: reply to %s failed \u2014 moving to QUALIFIED",
+                    "check_messages: reply to %s failed — moving to QUALIFIED",
                     public_id,
                 )
+                notify_failure(FailureEvent(
+                    title="Message Send Failed",
+                    detail=f"Reply to {public_id} failed — deal moved to QUALIFIED",
+                    campaign=str(campaign),
+                    task_type="check_messages",
+                    lead=public_id,
+                ))
                 set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
                 continue
 
@@ -448,6 +470,13 @@ def handle_check_messages(task, session, qualifiers):
                     "check_messages: post-reply sync failed for %s (best-effort)",
                     public_id,
                 )
+                notify_failure(FailureEvent(
+                    title="Post-Reply Sync Failed",
+                    detail=f"Conversation sync after reply failed for {public_id}",
+                    campaign=str(campaign),
+                    task_type="check_messages",
+                    lead=public_id,
+                ))
 
         elif decision.action == "mark_completed":
             set_profile_state(
