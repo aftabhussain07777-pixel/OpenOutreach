@@ -1,17 +1,18 @@
 # linkedin/tasks/follow_up.py
-"""Follow-up task — runs the agentic follow-up for one eligible CONNECTED deal."""
+"""DEPRECATED — follow-up logic merged into check_messages.py.
+
+This file retains shared constants and helpers imported by the unified
+``check_messages`` handler. See ``BACKUP_follow_up.py`` at the project
+root for the original standalone implementation.
+
+The ``handle_follow_up`` function and ``enqueue_follow_up`` are gone;
+proactive nudges and lead replies are both handled by
+``handle_check_messages`` in ``check_messages.py``.
+"""
 
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
-
-from django.utils import timezone
-from termcolor import colored
-
-from linkedin.enums import ProfileState
-from linkedin.models import ActionLog
-from linkedin.tasks.scheduler import enqueue_follow_up
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ MAX_UNANSWERED_FOLLOW_UPS = 3
 # The prompt instructs 2-8h for active conversations and 24-48h for async.
 MIN_FOLLOW_UP_HOURS = 2
 
+TIMESTAMP_TOLERANCE_SECONDS = 120
+
 
 def _build_send_profile(deal) -> dict:
     """Minimal profile dict for ``send_raw_message`` and its fallbacks."""
@@ -35,31 +38,6 @@ def _build_send_profile(deal) -> dict:
         "public_identifier": lead.public_identifier,
         "urn": lead.urn or "",
     }
-
-
-def _too_soon_to_nudge(deal) -> bool:
-    """Wait ``unanswered_count * MIN_DAYS_PER_UNANSWERED`` days between nudges."""
-    from django.contrib.contenttypes.models import ContentType
-
-    from chat.models import ChatMessage
-
-    ct = ContentType.objects.get_for_model(type(deal.lead))
-    messages = ChatMessage.objects.filter(content_type=ct, object_id=deal.lead_id)
-
-    last = messages.order_by("-creation_date").first()
-    if last is None or not last.is_outgoing:
-        return False
-
-    last_reply = messages.filter(is_outgoing=False).order_by("-creation_date").first()
-    nudges = messages.filter(is_outgoing=True)
-    if last_reply:
-        nudges = nudges.filter(creation_date__gt=last_reply.creation_date)
-
-    required = timedelta(days=nudges.count() * MIN_DAYS_PER_UNANSWERED)
-    return timezone.now() - last.creation_date < required
-
-
-TIMESTAMP_TOLERANCE_SECONDS = 120
 
 
 def _has_manual_messages_recently(deal, session) -> bool:
@@ -77,11 +55,10 @@ def _has_manual_messages_recently(deal, session) -> bool:
     from django.contrib.contenttypes.models import ContentType
 
     from chat.models import ChatMessage
+    from linkedin.models import ActionLog
 
     ct = ContentType.objects.get_for_model(type(deal.lead))
 
-    # Get the most recent outgoing message (sent by our account — could
-    # be AI or manual).  Lead replies (is_outgoing=False) are irrelevant.
     last_outgoing = (
         ChatMessage.objects.filter(
             content_type=ct,
@@ -92,26 +69,16 @@ def _has_manual_messages_recently(deal, session) -> bool:
         .first()
     )
 
-    # No outgoing messages at all -> nothing to detect
     if last_outgoing is None:
         return False
 
-    # Check if there's an ActionLog within TIMESTAMP_TOLERANCE_SECONDS of
-    # the last outgoing message's creation_date.  If yes, the message was
-    # sent by the AI (which always creates an ActionLog).  If not, someone
-    # sent it manually outside the system.
     window_start = last_outgoing.creation_date - timedelta(
-        seconds=TIMESTAMP_TOLERANCE_SECONDS
+        seconds=TIMESTAMP_TOLERANCE_SECONDS,
     )
     window_end = last_outgoing.creation_date + timedelta(
-        seconds=TIMESTAMP_TOLERANCE_SECONDS
+        seconds=TIMESTAMP_TOLERANCE_SECONDS,
     )
 
-    # NOTE: No campaign filter here — when a user changes a campaign,
-    # the AI-sent message's ActionLog was created under the *old*
-    # campaign and would not be found, causing a false positive "manual"
-    # detection.  Manual-ness is about whether a person typed the
-    # message, which is campaign-independent.
     nearby = ActionLog.objects.filter(
         linkedin_profile=session.linkedin_profile,
         action_type=ActionLog.ActionType.FOLLOW_UP,
@@ -170,174 +137,7 @@ def _notify_manual_intervention(session, deal, public_id: str) -> None:
 
     except Exception as e:
         logger.error(
-            "Failed to send manual intervention notification for %s → %s",
+            "Failed to send manual intervention notification for %s \u2192 %s",
             public_id,
             e,
         )
-
-
-def _next_followup_deal(campaign):
-    """Oldest CONNECTED deal in *campaign* not on a nudge cooldown."""
-    from crm.models import Deal
-
-    deals = (
-        Deal.objects.filter(
-            campaign=campaign,
-            state=ProfileState.CONNECTED,
-            outcome="",
-            lead__disqualified=False,
-        )
-        .select_related("lead", "campaign")
-        .order_by("update_date")
-    )
-    for deal in deals:
-        if not _too_soon_to_nudge(deal):
-            return deal
-    return None
-
-
-def handle_follow_up(task, session, qualifiers):
-    from linkedin.actions.message import send_raw_message
-    from linkedin.agents.follow_up import run_follow_up_agent
-    from linkedin.db.deals import set_profile_state
-    from linkedin.db.summaries import materialize_profile_summary_if_missing
-
-    campaign = session.campaign
-
-    if not session.linkedin_profile.can_execute(ActionLog.ActionType.FOLLOW_UP):
-        logger.info("[%s] follow_up: daily limit reached — slot skipped", campaign)
-        return
-
-    deal = _next_followup_deal(campaign)
-    if deal is None:
-        logger.info(
-            "[%s] follow_up: no eligible CONNECTED deal — slot skipped", campaign
-        )
-        return
-
-    public_id = deal.lead.public_identifier
-    logger.info(
-        "[%s] %s %s",
-        campaign,
-        colored("▶ follow_up", "green", attrs=["bold"]),
-        public_id,
-    )
-
-    # Check if we've reached the max unanswered follow-ups limit
-    if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
-        logger.info(
-            "[%s] follow_up %s: reached max unanswered follow-ups (%d) — marking as unresponsive",
-            session.campaign,
-            public_id,
-            MAX_UNANSWERED_FOLLOW_UPS,
-        )
-        set_profile_state(
-            session, public_id, ProfileState.COMPLETED.value, outcome="unresponsive"
-        )
-        return
-
-    materialize_profile_summary_if_missing(deal, session)
-
-    # Sync conversation before checking for manual messages, so we have
-    # fresh ChatMessage data including any manual messages the user sent
-    # directly on LinkedIn.
-    from linkedin.db.chat import sync_conversation
-
-    sync_conversation(session, public_id)
-
-    # Conservative pause: check for manual messages (timestamp mismatch).
-    # When a manual message is detected, re-enqueue with a 7d delay
-    # instead of pausing forever.  This prevents an infinite loop where
-    # reconcile immediately recreates the task for the still-CONNECTED deal.
-    if _has_manual_messages_recently(deal, session):
-        logger.info(
-            "[%s] follow_up %s: manual message detected — skipping for 7d",
-            session.campaign,
-            public_id,
-        )
-        _notify_manual_intervention(session, deal, public_id)
-
-        # Bump update_date so _next_followup_deal cycles past this deal
-        # for any remaining tasks in the current planner batch.
-        deal.save()
-
-        # Increment unanswered counter so repeated manual-skips eventually
-        # hit MAX_UNANSWERED_FOLLOW_UPS and auto-complete the deal — this
-        # breaks the indefinite 7d re-enqueue cycle.  We also re-check the
-        # cap immediately in case it was already at the threshold.
-        deal.unanswered_follow_up_count += 1
-        if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
-            logger.info(
-                "[%s] follow_up %s: max manual-skips reached (%d) — "
-                "marking as unresponsive",
-                session.campaign,
-                public_id,
-                MAX_UNANSWERED_FOLLOW_UPS,
-            )
-            set_profile_state(
-                session,
-                public_id,
-                ProfileState.COMPLETED.value,
-                outcome="unresponsive",
-            )
-            return
-
-        deal.save(update_fields=["unanswered_follow_up_count"])
-
-        enqueue_follow_up(campaign.pk, public_id, delay_seconds=7 * 24 * 3600)
-        return
-
-    decision = run_follow_up_agent(session, deal)
-
-    profile = _build_send_profile(deal)
-
-    if decision.action == "send_message":
-        logger.info(
-            "[%s] follow_up message for %s: %s", campaign, public_id, decision.message
-        )
-        sent = send_raw_message(session, profile, decision.message, source="ai")
-        if not sent:
-            set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
-            logger.warning(
-                "follow_up for %s: send failed — moving to QUALIFIED for re-connection",
-                public_id,
-            )
-            return
-        session.linkedin_profile.record_action(
-            ActionLog.ActionType.FOLLOW_UP,
-            session.campaign,
-        )
-        # Increment unanswered follow-up counter
-        deal.unanswered_follow_up_count += 1
-        deal.save(update_fields=["unanswered_follow_up_count"])
-        # Safety floor: never follow up faster than MIN_FOLLOW_UP_HOURS,
-        # even if the LLM returns a tiny value.
-        delay_hours = max(decision.follow_up_hours, MIN_FOLLOW_UP_HOURS)
-        enqueue_follow_up(campaign.pk, public_id, delay_seconds=delay_hours * 3600)
-
-        # Persist the outgoing message locally and bump update_date so the
-        # next slot's eligibility query respects the cooldown and moves
-        # this deal to the back of the queue.
-        from linkedin.db.chat import sync_conversation
-
-        try:
-            sync_conversation(session, public_id)
-        except Exception:
-            logger.exception("post-send sync failed for %s (best-effort)", public_id)
-        deal.save()
-
-    elif decision.action == "mark_completed":
-        set_profile_state(
-            session, public_id, ProfileState.COMPLETED.value, outcome=decision.outcome
-        )
-        logger.info(
-            "[%s] follow_up completed for %s: outcome=%s",
-            campaign,
-            public_id,
-            decision.outcome,
-        )
-
-    elif decision.action == "wait":
-        # Bump update_date so the eligibility query cycles to a different deal
-        # next time; this deal returns to the front only after others are touched.
-        deal.save()

@@ -79,20 +79,21 @@ class DealAdmin(admin.ModelAdmin):
     
     def resume_follow_up(self, request, queryset):
         """Resume AI follow-ups for selected deals."""
-        from linkedin.tasks.scheduler import enqueue_follow_up
+        from django.utils import timezone
         from django.contrib import messages
         
         resumed_count = 0
         for deal in queryset:
             if deal.state == "CONNECTED":
-                enqueue_follow_up(deal.campaign.pk, deal.lead.public_identifier, delay_seconds=3600)
+                deal.next_follow_up_at = timezone.now()
+                deal.save(update_fields=["next_follow_up_at"])
                 resumed_count += 1
         
         if resumed_count:
             messages.success(
                 request, 
                 f"✅ Resumed AI follow-ups for {resumed_count} conversation(s). "
-                f"Next follow-up in 1 hour."
+                f"Next scan will pick them up."
             )
         else:
             messages.warning(

@@ -80,15 +80,16 @@ class TestReconcile:
             payload__campaign_id=fake_session.campaign.pk,
         ).count() == 1
 
-    def test_plans_follow_up_slots(self, fake_session):
+    def test_plans_check_messages_slots(self, fake_session):
+        from linkedin.conf import CHECK_MESSAGES_SLOTS_PER_DAY
         _make_connected(fake_session, "alice")
         reconcile(fake_session)
-        # follow_up_daily_limit defaults to 25.
+        # check_messages planner creates CHECK_MESSAGES_SLOTS_PER_DAY slots.
         assert Task.objects.filter(
-            task_type=Task.TaskType.FOLLOW_UP,
+            task_type=Task.TaskType.CHECK_MESSAGES,
             status=Task.Status.PENDING,
             payload__campaign_id=fake_session.campaign.pk,
-        ).count() == fake_session.linkedin_profile.follow_up_daily_limit
+        ).count() == CHECK_MESSAGES_SLOTS_PER_DAY
 
     def test_does_not_replan_when_pending_exists(self, fake_session):
         reconcile(fake_session)

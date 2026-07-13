@@ -59,6 +59,14 @@ ACTIVE_TIMEZONE = system_timezone()
 CHECK_PENDING_DAILY_CAP = 100
 
 # ----------------------------------------------------------------------
+# Check messages schedule: number of inbox scans per 24h window. With
+# a 10-hour active window (9-19), 8 slots ≈ every 75 min during working
+# hours. The new approach uses the Voyager conversations API to scan
+# the inbox, so it's cheap enough to run frequently.
+# ----------------------------------------------------------------------
+CHECK_MESSAGES_SLOTS_PER_DAY = 8
+
+# ----------------------------------------------------------------------
 # Campaign config (timing + ML defaults — hardcoded, no YAML)
 # ----------------------------------------------------------------------
 CAMPAIGN_CONFIG = {

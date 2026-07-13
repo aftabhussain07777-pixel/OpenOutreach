@@ -218,30 +218,31 @@ class TestPlanConnectWindow:
 
 
 @pytest.mark.django_db
-class TestPlanFollowUpWindow:
+class TestPlanCheckMessagesWindow:
     @patch("linkedin.tasks.scheduler.ENABLE_ACTIVE_HOURS", False)
-    def test_creates_slots_for_remaining_daily(self, fake_session):
-        fake_session.linkedin_profile.follow_up_daily_limit = 25
-        fake_session.linkedin_profile.save(update_fields=["follow_up_daily_limit"])
+    def test_creates_slots_for_cadence(self, fake_session):
+        from linkedin.conf import CHECK_MESSAGES_SLOTS_PER_DAY
 
-        created = scheduler.plan_follow_up_window(fake_session, fake_session.campaign)
-        assert created == 25
-        tasks = Task.objects.filter(task_type=Task.TaskType.FOLLOW_UP)
-        assert tasks.count() == 25
+        created = scheduler.plan_check_messages_window(fake_session, fake_session.campaign)
+        assert created == CHECK_MESSAGES_SLOTS_PER_DAY
+        tasks = Task.objects.filter(task_type=Task.TaskType.CHECK_MESSAGES)
+        assert tasks.count() == CHECK_MESSAGES_SLOTS_PER_DAY
         for t in tasks:
             assert t.payload == {"campaign_id": fake_session.campaign.pk}
 
     @patch("linkedin.tasks.scheduler.ENABLE_ACTIVE_HOURS", False)
     def test_noop_when_pending_exists(self, fake_session):
+        from linkedin.conf import CHECK_MESSAGES_SLOTS_PER_DAY
+
         Task.objects.create(
-            task_type=Task.TaskType.FOLLOW_UP,
+            task_type=Task.TaskType.CHECK_MESSAGES,
             status=Task.Status.PENDING,
             scheduled_at=timezone.now(),
             payload={"campaign_id": fake_session.campaign.pk},
         )
-        created = scheduler.plan_follow_up_window(fake_session, fake_session.campaign)
+        created = scheduler.plan_check_messages_window(fake_session, fake_session.campaign)
         assert created == 0
-        assert Task.objects.filter(task_type=Task.TaskType.FOLLOW_UP).count() == 1
+        assert Task.objects.filter(task_type=Task.TaskType.CHECK_MESSAGES).count() == 1
 
 
 @pytest.mark.django_db

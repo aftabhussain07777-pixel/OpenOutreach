@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand, CommandError
 from django.contrib.contenttypes.models import ContentType
 
+from django.utils import timezone
+
 from crm.models import Deal
 from linkedin.models import Campaign
-from linkedin.tasks.scheduler import enqueue_follow_up
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +82,9 @@ class Command(BaseCommand):
                 )
             )
 
-        # Resume follow-ups
-        enqueue_follow_up(campaign_id, public_id, delay_seconds=delay)
+        # Resume follow-ups — stamp next_follow_up_at directly on the deal
+        deal.next_follow_up_at = timezone.now() + timedelta(seconds=delay)
+        deal.save(update_fields=["next_follow_up_at"])
 
         self.stdout.write(
             self.style.SUCCESS(

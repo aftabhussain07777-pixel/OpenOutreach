@@ -28,6 +28,7 @@ def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional
     Does NOT create Deal — that comes at qualification.
     """
     from crm.models import Lead
+    from crm.models.lead import _extract_industry_name
 
     # Use canonical public_identifier from Voyager response when available.
     canonical_pid = profile.get("public_identifier")
@@ -45,7 +46,8 @@ def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional
                 urn, public_id,
             )
             return None
-        lead = Lead.objects.create(linkedin_url=clean_url, public_identifier=public_id)
+        industry = _extract_industry_name(profile)
+        lead = Lead.objects.create(linkedin_url=clean_url, public_identifier=public_id, industry=industry)
         _cache_urn_from_profile(lead, profile)
 
     lead.embed_from_profile(profile)

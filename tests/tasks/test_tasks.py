@@ -15,7 +15,7 @@ from linkedin.ml.qualifier import BayesianQualifier
 from linkedin.models import ActionLog, Task
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import ConnectStrategy, handle_connect
-from linkedin.tasks.follow_up import handle_follow_up
+from linkedin.tasks.check_messages import _handle_follow_up_nudge
 
 SAMPLE_PROFILE = {
     "first_name": "Alice",
@@ -272,6 +272,8 @@ class TestHandleCheckPending:
 
 @pytest.mark.django_db
 class TestHandleFollowUp:
+    """Tests for the nudge logic now in ``_handle_follow_up_nudge``."""
+
     @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
     @patch("linkedin.db.chat.sync_conversation")
@@ -285,10 +287,9 @@ class TestHandleFollowUp:
         )
         _make_connected(fake_session)
 
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
+        deal = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
+        _handle_follow_up_nudge(fake_session, deal)
 
-        # Lazy: agent gets the resolved Deal.
         mock_materialize.assert_called_once()
         materialized_deal = mock_materialize.call_args[0][0]
         assert materialized_deal.lead.public_identifier == "alice"
@@ -313,8 +314,8 @@ class TestHandleFollowUp:
         )
         _make_connected(fake_session)
 
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
+        deal = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
+        _handle_follow_up_nudge(fake_session, deal)
 
         assert (
             ActionLog.objects.filter(action_type=ActionLog.ActionType.FOLLOW_UP).count()
@@ -338,8 +339,8 @@ class TestHandleFollowUp:
         )
         _make_connected(fake_session)
 
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
+        deal = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
+        _handle_follow_up_nudge(fake_session, deal)
 
         assert (
             ActionLog.objects.filter(action_type=ActionLog.ActionType.FOLLOW_UP).count()
@@ -360,26 +361,8 @@ class TestHandleFollowUp:
         deal_before = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
         original_update = deal_before.update_date
 
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
+        deal = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
+        _handle_follow_up_nudge(fake_session, deal)
 
         deal_after = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
         assert deal_after.update_date > original_update
-
-    @patch("linkedin.agents.follow_up.run_follow_up_agent")
-    def test_skips_when_no_eligible_deal(self, mock_agent, fake_session):
-        """No CONNECTED deals → handler marks slot done without calling the agent."""
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
-        mock_agent.assert_not_called()
-
-    def test_skips_on_rate_limit(self, fake_session):
-        _make_connected(fake_session)
-        fake_session.linkedin_profile.follow_up_daily_limit = 0
-        fake_session.linkedin_profile.save(update_fields=["follow_up_daily_limit"])
-
-        task = _make_task(Task.TaskType.FOLLOW_UP, {"campaign_id": fake_session.campaign.pk})
-        handle_follow_up(task, fake_session, _build_context(fake_session))
-
-        # No follow-up was actually performed (no ActionLog row).
-        assert ActionLog.objects.filter(action_type=ActionLog.ActionType.FOLLOW_UP).count() == 0

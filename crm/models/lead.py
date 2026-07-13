@@ -8,6 +8,16 @@ from django.utils.translation import gettext_lazy as _
 logger = logging.getLogger(__name__)
 
 
+def _extract_industry_name(profile: dict) -> str:
+    """Extract the industry name from a parsed Voyager profile dict."""
+    industry = profile.get("industry") or {}
+    if isinstance(industry, dict):
+        return industry.get("name", "") or ""
+    if isinstance(industry, str):
+        return industry
+    return ""
+
+
 class Lead(models.Model):
     class Meta:
         verbose_name = _("Lead")
@@ -16,6 +26,7 @@ class Lead(models.Model):
     linkedin_url = models.URLField(max_length=200, unique=True)
     public_identifier = models.CharField(max_length=200, unique=True)
     urn = models.CharField(max_length=200, null=True, blank=True, unique=True, db_index=True)
+    industry = models.CharField(max_length=200, blank=True, default="")
     embedding = models.BinaryField(null=True, blank=True)
     disqualified = models.BooleanField(default=False)
     creation_date = models.DateTimeField(default=timezone.now)
@@ -38,7 +49,7 @@ class Lead(models.Model):
         No DB caching: the heavy fields (raw JSON, names, company) live
         only in memory for as long as the caller holds the dict. We do
         opportunistically populate ``self.urn`` if it's still null and
-        the scrape returns one.
+        the scrape returns one. Also lazily backfills ``self.industry``.
         """
         from linkedin.api.client import PlaywrightLinkedinAPI
         from linkedin.exceptions import ProfileInaccessibleError
@@ -59,6 +70,12 @@ class Lead(models.Model):
             else:
                 self.urn = urn
                 self.save(update_fields=["urn"])
+
+        # Lazily backfill industry on any re-scrape
+        industry = _extract_industry_name(profile)
+        if industry and self.industry != industry:
+            self.industry = industry
+            self.save(update_fields=["industry"])
 
         return profile
 
@@ -84,6 +101,7 @@ class Lead(models.Model):
 
         Used by callers that already have a freshly parsed profile dict,
         so they can skip the scrape that ``get_embedding`` would trigger.
+        Also backfills industry from the profile dict.
         """
         from linkedin.ml.embeddings import embed_text
         from linkedin.ml.profile_text import build_profile_text
@@ -91,7 +109,14 @@ class Lead(models.Model):
         text = build_profile_text({"profile": profile})
         emb = embed_text(text)
         self.embedding = emb.tobytes()
-        self.save(update_fields=["embedding"])
+
+        industry = _extract_industry_name(profile)
+        fields_to_save = ["embedding"]
+        if industry and self.industry != industry:
+            self.industry = industry
+            fields_to_save.append("industry")
+
+        self.save(update_fields=fields_to_save)
 
     def to_profile_dict(self) -> dict:
         """Standard profile dict shape used by qualifiers and pools.

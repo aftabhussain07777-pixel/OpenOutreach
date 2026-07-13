@@ -47,6 +47,10 @@ class Deal(models.Model):
         help_text="Number of consecutive AI follow-ups without a reply"
     )
     next_check_pending_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    next_follow_up_at = models.DateTimeField(
+        null=True, blank=True, db_index=True,
+        help_text="When the next nudge/first-message is due (unified check_messages handler)",
+    )
     profile_summary = models.JSONField(null=True, blank=True, default=None)
     chat_summary = models.JSONField(null=True, blank=True, default=None)
     creation_date = models.DateTimeField(default=timezone.now)

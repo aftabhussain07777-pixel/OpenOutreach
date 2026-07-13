@@ -1,77 +1,364 @@
 # linkedin/tasks/check_messages.py
-"""Check messages task — scans all CONNECTED deals for new incoming
-messages and triggers a follow-up reply when one is found.
+"""Unified check-messages task — scans the LinkedIn inbox via Voyager API,
+handles BOTH lead replies and proactive follow-up nudges.
 
-Lazy: the task payload carries only ``campaign_id``. The handler resolves
-every CONNECTED deal with an existing conversation, syncs the latest
-messages, and replies to any new incoming messages from the lead.
+Replaces the old follow_up.py and check_messages.py split. The daemon
+creates ``CHECK_MESSAGES_SLOTS_PER_DAY`` slots per campaign per day; each
+slot scans the inbox and handles everything.
+
+Lazy: the task payload carries only ``campaign_id``. The handler:
+1. Calls the Voyager conversations API to list recent conversations.
+2. Filters to those whose participant URN matches a tracked lead.
+3. For unread conversations → syncs + replies (lead reply path).
+4. For read conversations → sends a nudge if ``next_follow_up_at`` is due.
+5. For CONNECTED deals not found in the inbox (new connections with
+   zero messages) → sends the first outreach if ``next_follow_up_at`` is due.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from termcolor import colored
 
 from chat.models import ChatMessage
 from linkedin.enums import ProfileState
-from linkedin.tasks.follow_up import MIN_FOLLOW_UP_HOURS, _has_manual_messages_recently, _notify_manual_intervention
+from linkedin.tasks.follow_up import (
+    MAX_UNANSWERED_FOLLOW_UPS,
+    MIN_FOLLOW_UP_HOURS,
+    _build_send_profile,
+    _has_manual_messages_recently,
+    _notify_manual_intervention,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def handle_check_messages(task, session, qualifiers):
-    """Scan all CONNECTED deals for new incoming messages and reply.
-    
-    Runs once per day per campaign (planned by ``plan_check_messages_window``).
-    Synces each conversation, detects incoming messages not yet replied to,
-    and uses the follow-up agent to generate an appropriate reply.
+# ── New-message detection ──────────────────────────────────────────────
+
+
+def _conversation_has_new_activity(
+    conv: dict,
+    last_sync_at,
+    self_urn: str | None = None,
+) -> bool | None:
+    """Check if a conversation element has new message activity.
+
+    Inspects the conversation element for unread indicators from the Voyager
+    API response. Returns ``True`` when new activity is detected, ``False``
+    when the conversation is clearly read, and ``None`` when neither signal
+    is available (caller should fall back to syncing anyway).
+
+    Checks (in order):
+    1. ``unreadCount`` — if > 0, definitely unread.
+    2. ``read`` — boolean, ``False`` means unread.
+    3. ``lastActivityAt`` — timestamp (ms) newer than *last_sync_at*.
+    4. ``messages.elements[0].sender.hostIdentityUrn`` — last message
+       sender is NOT the authenticated user (relies on *self_urn*).
     """
-    from crm.models import Deal
+    # Check 1: explicit unread count
+    unread = conv.get("unreadCount")
+    if unread is not None:
+        return bool(unread > 0)
+
+    # Check 2: read boolean
+    read = conv.get("read")
+    if read is not None:
+        return not read
+
+    # Check 3: lastActivityAt vs last sync time
+    last_activity = conv.get("lastActivityAt")
+    if last_activity is not None and last_sync_at is not None:
+        import datetime
+        activity_dt = datetime.datetime.fromtimestamp(
+            last_activity / 1000, tz=datetime.timezone.utc,
+        )
+        if activity_dt > last_sync_at:
+            return _last_message_from_lead(conv, self_urn, activity_dt, last_sync_at)
+
+    # No signal available — caller should sync to be safe
+    return None
+
+
+def _last_message_from_lead(
+    conv: dict,
+    self_urn: str | None,
+    activity_dt: object,
+    last_sync_at,
+) -> bool:
+    """Check if the last message in the conversation was sent by a lead."""
+    if not self_urn:
+        return True
+    msg_elements = (
+        conv.get("messages", {})
+        .get("elements", [])
+    )
+    for msg in msg_elements:
+        sender_urn = (
+            msg.get("sender", {})
+            .get("hostIdentityUrn") or
+            msg.get("actor", {})
+            .get("hostIdentityUrn", "")
+        )
+        if sender_urn and sender_urn != self_urn:
+            return True
+        if sender_urn == self_urn:
+            return False
+    return True
+
+
+# ── Follow-up scheduling helpers ───────────────────────────────────────
+
+
+def _stamp_next_follow_up(deal, delay_hours: float) -> None:
+    """Set `deal.next_follow_up_at` to ``now + delay_hours`` and save."""
+    deal.next_follow_up_at = timezone.now() + timedelta(hours=delay_hours)
+    deal.save(update_fields=["next_follow_up_at"])
+
+
+def _is_follow_up_due(deal) -> bool:
+    """Check if this deal is ready for a nudge/first-message."""
+    if deal.next_follow_up_at is None:
+        # Freshly connected, no follow-up scheduled yet — due immediately.
+        return True
+    return timezone.now() >= deal.next_follow_up_at
+
+
+# ── Nudge handler ──────────────────────────────────────────────────────
+
+
+def _handle_follow_up_nudge(session, deal, conv=None):
+    """Send a proactive follow-up nudge (or first message for new connections).
+
+    Handles:
+    - Max-unanswered limit → complete as unresponsive.
+    - Manual message detection → stamp 7d delay and skip.
+    - LLM-agent decision → send nudge / mark completed / wait.
+    """
     from linkedin.actions.message import send_raw_message
     from linkedin.agents.follow_up import run_follow_up_agent
     from linkedin.db.chat import sync_conversation
     from linkedin.db.deals import set_profile_state
     from linkedin.db.summaries import materialize_profile_summary_if_missing
     from linkedin.models import ActionLog
-    from linkedin.tasks.scheduler import enqueue_follow_up
+
+    campaign = session.campaign
+    public_id = deal.lead.public_identifier
+
+    if not session.linkedin_profile.can_execute(ActionLog.ActionType.FOLLOW_UP):
+        logger.info(
+            "[%s] check_messages nudge %s: daily follow-up limit reached — skipping",
+            campaign, public_id,
+        )
+        return
+
+    # Max unanswered check
+    if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
+        logger.info(
+            "[%s] check_messages nudge %s: reached max unanswered (%d) — "
+            "marking as unresponsive",
+            campaign, public_id, MAX_UNANSWERED_FOLLOW_UPS,
+        )
+        set_profile_state(
+            session, public_id, ProfileState.COMPLETED.value, outcome="unresponsive",
+        )
+        return
+
+    materialize_profile_summary_if_missing(deal, session)
+
+    # Sync so we have fresh data for manual-message detection
+    sync_conversation(session, public_id)
+
+    # Manual-message detection
+    if _has_manual_messages_recently(deal, session):
+        logger.info(
+            "[%s] check_messages nudge %s: manual message detected — skipping 7d",
+            campaign, public_id,
+        )
+        _notify_manual_intervention(session, deal, public_id)
+        deal.unanswered_follow_up_count += 1
+        if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
+            set_profile_state(
+                session, public_id, ProfileState.COMPLETED.value,
+                outcome="unresponsive",
+            )
+            return
+        deal.save(update_fields=["unanswered_follow_up_count"])
+        _stamp_next_follow_up(deal, delay_hours=7 * 24)  # 7 days
+        return
+
+    decision = run_follow_up_agent(session, deal)
+    profile = _build_send_profile(deal)
+
+    if decision.action == "send_message":
+        logger.info(
+            "[%s] check_messages nudge %s: %s", campaign, public_id, decision.message,
+        )
+        sent = send_raw_message(session, profile, decision.message, source="ai")
+        if not sent:
+            logger.warning(
+                "check_messages nudge %s: send failed — moving to QUALIFIED",
+                public_id,
+            )
+            set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
+            return
+
+        session.linkedin_profile.record_action(
+            ActionLog.ActionType.FOLLOW_UP, session.campaign,
+        )
+        deal.unanswered_follow_up_count += 1
+        deal.save(update_fields=["unanswered_follow_up_count"])
+
+        delay_hours = max(decision.follow_up_hours, MIN_FOLLOW_UP_HOURS)
+        _stamp_next_follow_up(deal, delay_hours=delay_hours)
+
+        # Sync to persist the outgoing message locally
+        try:
+            sync_conversation(session, public_id)
+        except Exception:
+            logger.exception(
+                "check_messages nudge: post-send sync failed for %s (best-effort)",
+                public_id,
+            )
+        deal.save()  # bump update_date
+
+    elif decision.action == "mark_completed":
+        set_profile_state(
+            session, public_id,
+            ProfileState.COMPLETED.value, outcome=decision.outcome,
+        )
+        logger.info(
+            "[%s] check_messages nudge completed %s → %s",
+            campaign, public_id, decision.outcome,
+        )
+
+    elif decision.action == "wait":
+        # Bump update_date so we don't keep trying this deal on every scan
+        deal.save()
+
+
+# ── Main handler ───────────────────────────────────────────────────────
+
+
+def handle_check_messages(task, session, qualifiers):
+    """Scan the LinkedIn inbox for tracked leads, then handle both replies
+    and proactive nudges."""
+    from crm.models import Deal, Lead
+    from linkedin.api.client import PlaywrightLinkedinAPI
+    from linkedin.api.messaging import fetch_conversations
+    from linkedin.db.chat import sync_conversation
+    from linkedin.db.deals import set_profile_state
+    from linkedin.db.summaries import materialize_profile_summary_if_missing
+    from linkedin.models import ActionLog
 
     campaign = session.campaign
 
-    # Find all CONNECTED deals (active conversations)
-    deals = (
+    # ── 1. Gather tracked CONNECTED deals ───────────────────────────
+    tracked_deals = list(
         Deal.objects.filter(
             campaign=campaign,
             state=ProfileState.CONNECTED,
             outcome="",
             lead__disqualified=False,
-        )
-        .select_related("lead", "campaign")
-        .order_by("update_date")
+            lead__urn__isnull=False,
+        ).select_related("lead")
     )
 
+    if not tracked_deals:
+        logger.info("[%s] check_messages: no CONNECTED leads with URNs", campaign)
+        return
+
+    tracked_urns: dict[str, Deal] = {}
+    urn_to_last_sync: dict[str, object] = {}
+    ct = ContentType.objects.get_for_model(Lead)
+
+    for deal in tracked_deals:
+        urn = deal.lead.urn
+        tracked_urns[urn] = deal
+
+        last_msg = (
+            ChatMessage.objects.filter(
+                content_type=ct, object_id=deal.lead_id,
+            )
+            .order_by("-creation_date")
+            .values_list("creation_date", flat=True)
+            .first()
+        )
+        urn_to_last_sync[urn] = last_msg
+
+    # ── 2. Fetch inbox conversations ────────────────────────────────
+    session.ensure_browser()
+    api = PlaywrightLinkedinAPI(session=session)
+    mailbox_urn = session.self_profile["urn"]
+
+    raw = fetch_conversations(api, mailbox_urn)
+    elements = (
+        raw.get("data", {})
+        .get("messengerConversationsBySyncToken", {})
+        .get("elements", [])
+    )
+
+    # ── 3. Process inbox conversations ──────────────────────────────
+    seen_urns: set[str] = set()
     replied_count = 0
-    for deal in deals:
+    nudged_count = 0
+
+    for conv in elements:
+        # Match tracked lead
+        matched_urn = None
+        for p in conv.get("conversationParticipants", []):
+            host_urn = p.get("hostIdentityUrn")
+            if host_urn in tracked_urns:
+                matched_urn = host_urn
+                break
+
+        if matched_urn is None:
+            continue  # unknown user — skip (inbound inquiry)
+
+        seen_urns.add(matched_urn)
+        deal = tracked_urns[matched_urn]
         public_id = deal.lead.public_identifier
 
-        # Sync conversation to get latest messages from LinkedIn
+        has_new = _conversation_has_new_activity(
+            conv, urn_to_last_sync.get(matched_urn), self_urn=mailbox_urn,
+        )
+
+        if has_new is False:
+            # Conversation is read — no new message from lead
+            # Check if it's time for a proactive nudge
+            if _is_follow_up_due(deal):
+                logger.info(
+                    "[%s] %s %s — nudge due (next_follow_up_at due)",
+                    campaign,
+                    colored("\u25b6 check_messages nudge", "green", attrs=["bold"]),
+                    public_id,
+                )
+                _handle_follow_up_nudge(session, deal, conv=conv)
+                nudged_count += 1
+            continue
+
+        if has_new is None:
+            # No signal — sync to be safe
+            logger.debug(
+                "check_messages: no unread signal for %s — falling back to sync",
+                matched_urn,
+            )
+
+        # ── LEAD REPLIED path ───────────────────────────────────────
         sync_conversation(session, public_id)
 
-        # Check for new incoming messages since the last AI-sent reply
-        ct = ContentType.objects.get_for_model(type(deal.lead))
-
+        # Check for new incoming messages since last outgoing
         last_outgoing = (
             ChatMessage.objects.filter(
-                content_type=ct,
-                object_id=deal.lead_id,
-                is_outgoing=True,
+                content_type=ct, object_id=deal.lead_id, is_outgoing=True,
             )
             .order_by("-creation_date")
             .first()
         )
 
-        # Look for incoming messages after the latest outgoing message
         incoming_filter = {
             "content_type": ct,
             "object_id": deal.lead_id,
@@ -86,29 +373,45 @@ def handle_check_messages(task, session, qualifiers):
             .first()
         )
         if not new_incoming:
-            continue  # no new messages from this lead
+            logger.debug(
+                "[%s] check_messages %s: synced but no new incoming messages",
+                campaign, public_id,
+            )
+            # Still check nudge eligibility
+            if _is_follow_up_due(deal):
+                logger.info(
+                    "[%s] %s %s — nudge due (no lead reply after sync)",
+                    campaign,
+                    colored("\u25b6 check_messages nudge", "green", attrs=["bold"]),
+                    public_id,
+                )
+                _handle_follow_up_nudge(session, deal, conv=conv)
+                nudged_count += 1
+            continue
 
         logger.info(
-            "[%s] %s %s — new message from lead: %.80s",
+            "[%s] %s %s \u2014 new message from lead: %.80s",
             campaign,
             colored("\u25b6 check_messages", "yellow", attrs=["bold"]),
             public_id,
             new_incoming.content or "",
         )
 
-        # Check for manual messages — if a human typed something recently,
-        # back off the AI from this conversation.
+        # Manual intervention check
         if _has_manual_messages_recently(deal, session):
             logger.info(
-                "[%s] check_messages %s: manual message detected — skipping reply",
-                session.campaign,
-                public_id,
+                "[%s] check_messages %s: manual message detected \u2014 skipping reply",
+                campaign, public_id,
             )
             _notify_manual_intervention(session, deal, public_id)
-            deal.save()  # bump update_date
+            deal.save()
+            _stamp_next_follow_up(deal, delay_hours=7 * 24)  # 7d backoff
             continue
 
-        # Generate a reply using the follow-up agent
+        # Generate reply
+        from linkedin.actions.message import send_raw_message
+        from linkedin.agents.follow_up import run_follow_up_agent
+
         materialize_profile_summary_if_missing(deal, session)
         decision = run_follow_up_agent(session, deal)
 
@@ -120,28 +423,24 @@ def handle_check_messages(task, session, qualifiers):
             sent = send_raw_message(session, profile, decision.message, source="ai")
             if not sent:
                 logger.warning(
-                    "check_messages: reply to %s failed — moving to QUALIFIED",
+                    "check_messages: reply to %s failed \u2014 moving to QUALIFIED",
                     public_id,
                 )
                 set_profile_state(session, public_id, ProfileState.QUALIFIED.value)
                 continue
 
             session.linkedin_profile.record_action(
-                ActionLog.ActionType.FOLLOW_UP,
-                session.campaign,
+                ActionLog.ActionType.FOLLOW_UP, session.campaign,
             )
             replied_count += 1
 
-            # Reset unanswered counter since the lead replied
             if deal.unanswered_follow_up_count > 0:
                 deal.unanswered_follow_up_count = 0
                 deal.save(update_fields=["unanswered_follow_up_count"])
 
-            # Schedule next follow-up at the LLM-recommended interval
             delay_hours = max(decision.follow_up_hours, MIN_FOLLOW_UP_HOURS)
-            enqueue_follow_up(campaign.pk, public_id, delay_seconds=delay_hours * 3600)
+            _stamp_next_follow_up(deal, delay_hours=delay_hours)
 
-            # Sync the message we just sent so chat_summary stays current
             try:
                 sync_conversation(session, public_id)
             except Exception:
@@ -152,25 +451,39 @@ def handle_check_messages(task, session, qualifiers):
 
         elif decision.action == "mark_completed":
             set_profile_state(
-                session,
-                public_id,
-                ProfileState.COMPLETED.value,
-                outcome=decision.outcome,
+                session, public_id,
+                ProfileState.COMPLETED.value, outcome=decision.outcome,
             )
             logger.info(
-                "[%s] check_messages: completed %s → %s",
-                campaign,
-                public_id,
-                decision.outcome,
+                "[%s] check_messages: completed %s \u2192 %s",
+                campaign, public_id, decision.outcome,
             )
 
-        # "wait" action: no reply needed, skip
+    # ── 4. Orphan deals (not in inbox — new connections) ─────────────
+    for deal in tracked_deals:
+        if deal.lead.urn in seen_urns:
+            continue  # already handled above
+
+        public_id = deal.lead.public_identifier
+        if _is_follow_up_due(deal):
+            logger.info(
+                "[%s] %s %s — first outreach due (not yet in inbox)",
+                campaign,
+                colored("\u25b6 check_messages first", "cyan", attrs=["bold"]),
+                public_id,
+            )
+            _handle_follow_up_nudge(session, deal)
+            nudged_count += 1
 
     if replied_count:
         logger.info(
             "[%s] check_messages: replied to %d new message(s)",
-            campaign,
-            replied_count,
+            campaign, replied_count,
         )
-    else:
-        logger.info("[%s] check_messages: no new messages found", campaign)
+    if nudged_count:
+        logger.info(
+            "[%s] check_messages: sent %d follow-up nudge(s)",
+            campaign, nudged_count,
+        )
+    if not replied_count and not nudged_count:
+        logger.info("[%s] check_messages: no new activity found", campaign)

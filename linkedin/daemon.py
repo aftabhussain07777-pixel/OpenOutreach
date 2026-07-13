@@ -26,14 +26,15 @@ from linkedin.models import Task
 from linkedin.tasks.check_messages import handle_check_messages
 from linkedin.tasks.check_pending import handle_check_pending
 from linkedin.tasks.connect import handle_connect
-from linkedin.tasks.follow_up import handle_follow_up
 
 logger = logging.getLogger(__name__)
 
 _HANDLERS = {
     Task.TaskType.CONNECT: handle_connect,
     Task.TaskType.CHECK_PENDING: handle_check_pending,
-    Task.TaskType.FOLLOW_UP: handle_follow_up,
+    # FOLLOW_UP is deprecated — lingering tasks are handled by the
+    # unified check_messages handler.
+    Task.TaskType.FOLLOW_UP: handle_check_messages,
     Task.TaskType.CHECK_MESSAGES: handle_check_messages,
 }
 

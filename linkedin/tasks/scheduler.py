@@ -43,6 +43,7 @@ from linkedin.conf import (
     ACTIVE_START_HOUR,
     ACTIVE_TIMEZONE,
     CAMPAIGN_CONFIG,
+    CHECK_MESSAGES_SLOTS_PER_DAY,
     CHECK_PENDING_DAILY_CAP,
     ENABLE_ACTIVE_HOURS,
 )
@@ -209,38 +210,16 @@ def plan_connect_window(session, campaign) -> int:
     return created
 
 
-def plan_follow_up_window(session, campaign) -> int:
-    """Plan the next 24h of follow-up slots for *campaign*. No-op when a
-    PENDING follow-up task already exists for the campaign."""
-    if _has_pending(Task.TaskType.FOLLOW_UP, campaign.pk):
-        return 0
-
-    profile = session.linkedin_profile
-    daily_remaining = max(
-        0, profile.follow_up_daily_limit - profile._daily_count("follow_up")
-    )
-
-    created = _plan_slots(Task.TaskType.FOLLOW_UP, campaign.pk, daily_remaining)
-    if created:
-        logger.info(
-            "[%s] planned %d follow_up slots over next 24h — 1 fires now, "
-            "%d Poisson-spaced (daily=%d)",
-            campaign,
-            created,
-            max(0, created - 1),
-            daily_remaining,
-        )
-    return created
 
 
 def plan_check_messages_window(session, campaign) -> int:
     """Plan the next 24h of check_messages slots for *campaign*. No-op when a
     PENDING check_messages task already exists for the campaign.
 
-    Creates one slot Poisson-spaced across the next 24h working window (no
-    immediate slot — unlike connect/follow-up, there is no rate-limit or
-    daily-cap to exhaust, so an immediate slot would re-fire on every
-    reconcile cycle, scanning all conversations pointlessly).
+    Creates ``CHECK_MESSAGES_SLOTS_PER_DAY`` slots Poisson-spaced across the
+    next 24h working window. Unlike connect/follow-up there is no per-slot
+    rate-limit to exhaust, so the scan is cheap (single API call to list
+    conversations, then only syncs conversations that belong to tracked leads).
 
     On the very first plan (no completed check_messages task for this
     campaign), an immediate slot is added so daemon start catches any
@@ -256,19 +235,20 @@ def plan_check_messages_window(session, campaign) -> int:
         status=Task.Status.COMPLETED,
     ).exists()
 
+    n = CHECK_MESSAGES_SLOTS_PER_DAY
     if has_ever_run:
-        # Normal cadence: Poisson-space 1 slot across the next 24h
-        # so it fires roughly once per day.
-        times = poisson_slot_times(now, n=1)
+        # Normal cadence: Poisson-space n slots across the next 24h
+        times = poisson_slot_times(now, n=n)
     else:
-        # First-ever plan: 1 immediate + 0 Poisson-spaced
-        times = [now]
+        # First-ever plan: 1 immediate + n-1 Poisson-spaced
+        times = [now] + poisson_slot_times(now, n=n - 1)
 
     created = _create_lazy_slots(Task.TaskType.CHECK_MESSAGES, campaign.pk, times)
     if created:
         logger.info(
-            "[%s] planned 1 check_messages slot%s",
+            "[%s] planned %d check_messages slots over next 24h%s",
             campaign,
+            created,
             " (fires now — first run)" if not has_ever_run else "",
         )
     return created
@@ -350,53 +330,6 @@ def seconds_until_tomorrow() -> float:
     return (tomorrow - now).total_seconds()
 
 
-def enqueue_follow_up(
-    campaign_id: int, public_id: str | None = None, delay_seconds: float = 0
-) -> None:
-    """Schedule a single follow-up task for *campaign_id*.
-
-    The task fires after *delay_seconds* (default: immediately).  The handler
-    will resolve the specific deal at execution time via the eligibility query
-    (``_next_followup_deal``), so *public_id* is informational only and is NOT
-    used for targeting — it avoids redundant re-enqueues of the same deal.
-
-    When *public_id* is provided, this is a no-op if a PENDING follow_up task
-    already exists for the same ``(campaign_id, public_id)`` — prevents
-    duplicate 7d-delayed tasks when multiple follow_up slots fire for the
-    same deal before any of them takes effect.
-    """
-    # Avoid duplicate enqueues for the same (campaign, public_id).
-    if public_id:
-        exists = Task.objects.filter(
-            task_type=Task.TaskType.FOLLOW_UP,
-            status=Task.Status.PENDING,
-            payload__campaign_id=campaign_id,
-            payload__public_id=public_id,
-        ).exists()
-        if exists:
-            logger.debug(
-                "enqueue_follow_up: task already pending for campaign=%s, "
-                "public_id=%s — skipping",
-                campaign_id,
-                public_id,
-            )
-            return
-
-    now = timezone.now()
-    Task.objects.create(
-        task_type=Task.TaskType.FOLLOW_UP,
-        scheduled_at=now + timedelta(seconds=delay_seconds),
-        payload={
-            "campaign_id": campaign_id,
-            "public_id": public_id,
-        },
-    )
-    logger.debug(
-        "enqueued follow_up for campaign=%s (delay=%ds, public_id=%s)",
-        campaign_id,
-        delay_seconds,
-        public_id,
-    )
 
 
 # ── State-transition hook ─────────────────────────────────────────────
@@ -404,15 +337,18 @@ def enqueue_follow_up(
 
 def on_deal_state_entered(deal) -> None:
     """PENDING: stamp ``deal.next_check_pending_at = now + backoff_hours``.
-    All other transitions are no-ops (CONNECTED tasks are created lazily
-    by the planner, never by state changes)."""
+    CONNECTED: stamp ``deal.next_follow_up_at = now`` (triggers first outreach
+    on the next check_messages scan). All other transitions are no-ops."""
     state = ProfileState(deal.state)
-    if state != ProfileState.PENDING:
-        return
+    now = timezone.now()
 
-    backoff = deal.backoff_hours or CAMPAIGN_CONFIG["check_pending_recheck_after_hours"]
-    deal.next_check_pending_at = timezone.now() + timedelta(hours=backoff)
-    deal.save(update_fields=["next_check_pending_at"])
+    if state == ProfileState.PENDING:
+        backoff = deal.backoff_hours or CAMPAIGN_CONFIG["check_pending_recheck_after_hours"]
+        deal.next_check_pending_at = now + timedelta(hours=backoff)
+        deal.save(update_fields=["next_check_pending_at"])
+    elif state == ProfileState.CONNECTED:
+        deal.next_follow_up_at = now
+        deal.save(update_fields=["next_follow_up_at"])
 
 
 # ── Reconciliation ────────────────────────────────────────────────────
@@ -431,7 +367,6 @@ def _recover_stale_running_tasks() -> int:
 
 _PLANNERS = (
     plan_connect_window,
-    plan_follow_up_window,
     plan_check_pending_window,
     plan_check_messages_window,
 )
