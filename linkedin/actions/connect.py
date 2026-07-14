@@ -11,7 +11,7 @@ from linkedin.exceptions import ReachedConnectionLimit, SkipProfile
 logger = logging.getLogger(__name__)
 
 SELECTORS = {
-    "weekly_limit": 'div[class*="ip-fuse-limit-alert__warning"]',
+    "weekly_limit": 'div[role="alert"]:has-text("weekly limit")',
     "invite_to_connect": (
         '[aria-label*="Invite"][aria-label*="to connect"]:visible, '
         'a:has(span:text-is("Connect")):visible, '
