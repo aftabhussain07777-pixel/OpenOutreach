@@ -29,6 +29,7 @@ from linkedin.enums import ProfileState
 from linkedin.notification import FailureEvent, notify_failure
 from linkedin.tasks.follow_up import (
     MAX_UNANSWERED_FOLLOW_UPS,
+    MIN_DAYS_PER_UNANSWERED,
     MIN_FOLLOW_UP_HOURS,
     _build_send_profile,
     _has_manual_messages_recently,
@@ -114,10 +115,33 @@ def _last_message_from_lead(
 # ── Follow-up scheduling helpers ───────────────────────────────────────
 
 
+def _lead_has_replied(deal) -> bool:
+    """Check if the lead has ever sent an incoming message."""
+    from django.contrib.contenttypes.models import ContentType
+    return ChatMessage.objects.filter(
+        content_type=ContentType.objects.get_for_model(type(deal.lead)),
+        object_id=deal.lead_id,
+        is_outgoing=False,
+    ).exists()
+
+
 def _stamp_next_follow_up(deal, delay_hours: float) -> None:
-    """Set `deal.next_follow_up_at` to ``now + delay_hours`` and save."""
-    deal.next_follow_up_at = timezone.now() + timedelta(hours=delay_hours)
+    """Set `deal.next_follow_up_at` to ``now + delay_hours``, scaling the
+    minimum delay with unanswered follow-up count so each consecutive nudge
+    waits ``MIN_DAYS_PER_UNANSWERED * unanswered_count`` days minimum."""
+    # Scale the floor: each unanswered nudge adds days, not hours
+    min_hours = max(
+        MIN_FOLLOW_UP_HOURS,
+        deal.unanswered_follow_up_count * MIN_DAYS_PER_UNANSWERED * 24,
+    )
+    delay = max(delay_hours, min_hours)
+    deal.next_follow_up_at = timezone.now() + timedelta(hours=delay)
     deal.save(update_fields=["next_follow_up_at"])
+    logger.debug(
+        "stamp_next_follow_up for %s: delay=%dh (LLM=%dh, min=%dh, unanswered=%d)",
+        deal.lead.public_identifier, delay, delay_hours, min_hours,
+        deal.unanswered_follow_up_count,
+    )
 
 
 def _is_follow_up_due(deal) -> bool:
@@ -260,7 +284,8 @@ def _handle_follow_up_nudge(session, deal, conv=None):
 
 def handle_check_messages(task, session, qualifiers):
     """Scan the LinkedIn inbox for tracked leads, then handle both replies
-    and proactive nudges."""
+    and proactive nudges. Once a lead has replied, all follow-up activity
+    stops for that deal (temporary guard)."""
     from crm.models import Deal, Lead
     from linkedin.api.client import PlaywrightLinkedinAPI
     from linkedin.api.messaging import fetch_conversations
@@ -336,6 +361,14 @@ def handle_check_messages(task, session, qualifiers):
         seen_urns.add(matched_urn)
         deal = tracked_urns[matched_urn]
         public_id = deal.lead.public_identifier
+
+        # TEMPORARY: once a lead has replied, stop ALL follow-up activity
+        if _lead_has_replied(deal):
+            logger.debug(
+                "[%s] check_messages %s: lead already replied — skipping (temp guard)",
+                campaign, public_id,
+            )
+            continue
 
         has_new = _conversation_has_new_activity(
             conv, urn_to_last_sync.get(matched_urn), self_urn=mailbox_urn,
@@ -488,21 +521,49 @@ def handle_check_messages(task, session, qualifiers):
                 campaign, public_id, decision.outcome,
             )
 
-    # ── 4. Orphan deals (not in inbox — new connections) ─────────────
+    # ── 4. Orphan deals (not in inbox scan) ──────────────────────────
+    # Deals whose conversations weren't in the first page of API results
+    # (pagination) or whose URN wasn't resolved yet. Differentiate between
+    # inbox-misses (have existing messages) and true new connections (zero
+    # messages) for correct logging.
     for deal in tracked_deals:
         if deal.lead.urn in seen_urns:
             continue  # already handled above
 
         public_id = deal.lead.public_identifier
-        if _is_follow_up_due(deal):
+        if not _is_follow_up_due(deal):
+            continue
+
+        # TEMPORARY: once a lead has replied, stop ALL follow-up activity
+        if _lead_has_replied(deal):
+            logger.debug(
+                "[%s] check_messages %s: lead already replied — skipping orphan (temp guard)",
+                campaign, public_id,
+            )
+            continue
+
+        # Check if this deal has any existing conversation history
+        has_messages = ChatMessage.objects.filter(
+            content_type=ct, object_id=deal.lead_id,
+        ).exists()
+
+        if has_messages:
             logger.info(
-                "[%s] %s %s — first outreach due (not yet in inbox)",
+                "[%s] %s %s — nudge due (conversation not in recent inbox)",
+                campaign,
+                colored("\u25b6 check_messages nudge", "green", attrs=["bold"]),
+                public_id,
+            )
+        else:
+            logger.info(
+                "[%s] %s %s — first outreach due (new connection, no messages yet)",
                 campaign,
                 colored("\u25b6 check_messages first", "cyan", attrs=["bold"]),
                 public_id,
             )
-            _handle_follow_up_nudge(session, deal)
-            nudged_count += 1
+
+        _handle_follow_up_nudge(session, deal)
+        nudged_count += 1
 
     if replied_count:
         logger.info(
