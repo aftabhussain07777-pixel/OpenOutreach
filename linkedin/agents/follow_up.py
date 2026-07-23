@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import Agent
 
 from linkedin.conf import PROMPTS_DIR
-from linkedin.llm import get_llm_model, run_agent_sync
+from linkedin.llm import get_conversation_llm_model, run_agent_sync
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def run_follow_up_agent(session, deal) -> FollowUpDecision:
     system_prompt = _render_system_prompt(session, deal, recent)
 
     agent = Agent(
-        get_llm_model(),
+        get_conversation_llm_model(),
         output_type=FollowUpDecision,
         model_settings={"temperature": 0.7, "timeout": 60},
     )

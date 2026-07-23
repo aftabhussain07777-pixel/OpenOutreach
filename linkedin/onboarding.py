@@ -45,6 +45,7 @@ class OnboardConfig:
     llm_provider: str = "openai"
     llm_api_key: str = ""
     ai_model: str = ""
+    conversation_ai_model: str = ""
     llm_api_base: str = ""
     newsletter: bool = True
     connect_daily_limit: int = DEFAULT_CONNECT_DAILY_LIMIT
@@ -71,7 +72,7 @@ _ACCOUNT_KEYS = {
     "follow_up_daily_limit",
     "legal_acceptance",
 }
-_LLM_KEYS = {"llm_provider", "llm_api_key", "ai_model", "llm_api_base"}
+_LLM_KEYS = {"llm_provider", "llm_api_key", "ai_model", "conversation_ai_model", "llm_api_base"}
 _ALL_KEYS = _CAMPAIGN_KEYS | _ACCOUNT_KEYS | _LLM_KEYS
 
 
@@ -94,6 +95,8 @@ def missing_keys() -> set[str]:
         keys.add("llm_api_key")
     if not cfg.ai_model:
         keys.add("ai_model")
+    if not cfg.conversation_ai_model:
+        keys.add("conversation_ai_model")
     # llm_api_base is only required for the openai_compatible provider.
     if (
         cfg.llm_provider == SiteConfig.LLMProvider.OPENAI_COMPATIBLE
@@ -194,6 +197,14 @@ def collect_from_wizard() -> OnboardConfig:
         questions.append(
             questionary.text(
                 "AI model (e.g. 'gpt-4o', 'claude-sonnet-4-20250514'):", name="ai_model"
+            )
+        )
+    if "conversation_ai_model" in missing:
+        questions.append(
+            questionary.text(
+                "Conversation AI model for follow-up agent (e.g. 'gpt-5-mini'):",
+                name="conversation_ai_model",
+                default="gpt-5-mini",
             )
         )
     if "llm_api_base" in missing:
@@ -380,6 +391,7 @@ def apply(config: OnboardConfig) -> None:
         ("llm_provider", config.llm_provider),
         ("llm_api_key", config.llm_api_key),
         ("ai_model", config.ai_model),
+        ("conversation_ai_model", config.conversation_ai_model),
         ("llm_api_base", config.llm_api_base),
     ]:
         if val:

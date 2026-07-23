@@ -35,7 +35,8 @@ class SiteConfig(models.Model):
         default=LLMProvider.OPENAI,
     )
     llm_api_key = models.CharField(max_length=500, blank=True, default="")
-    ai_model = models.CharField(max_length=200, blank=True, default="")
+    ai_model = models.CharField(max_length=200, blank=True, default="gpt-5-nano")
+    conversation_ai_model = models.CharField(max_length=200, blank=True, default="gpt-5-mini")
     llm_api_base = models.CharField(max_length=500, blank=True, default="")
 
     class Meta:

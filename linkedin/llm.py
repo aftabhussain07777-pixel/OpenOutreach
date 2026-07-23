@@ -88,54 +88,61 @@ def run_agent_sync(coro: Awaitable[_T]) -> _T:
 
 # ── Per-provider builders ────────────────────────────────────────────
 
-def _build_openai(cfg):
+def _build_openai(cfg, *, model_field: str = "ai_model"):
     from openai import AsyncOpenAI
     from pydantic_ai.models.openai import OpenAIModel
     from pydantic_ai.providers.openai import OpenAIProvider
+    model_name = getattr(cfg, model_field)
     client = AsyncOpenAI(api_key=cfg.llm_api_key, max_retries=_MAX_RETRIES)
-    return OpenAIModel(cfg.ai_model, provider=OpenAIProvider(openai_client=client))
+    return OpenAIModel(model_name, provider=OpenAIProvider(openai_client=client))
 
 
-def _build_anthropic(cfg):
+def _build_anthropic(cfg, *, model_field: str = "ai_model"):
     from anthropic import AsyncAnthropic
     from pydantic_ai.models.anthropic import AnthropicModel
     from pydantic_ai.providers.anthropic import AnthropicProvider
+    model_name = getattr(cfg, model_field)
     client = AsyncAnthropic(api_key=cfg.llm_api_key, max_retries=_MAX_RETRIES)
-    return AnthropicModel(cfg.ai_model, provider=AnthropicProvider(anthropic_client=client))
+    return AnthropicModel(model_name, provider=AnthropicProvider(anthropic_client=client))
 
 
-def _build_google(cfg):
+def _build_google(cfg, *, model_field: str = "ai_model"):
     from pydantic_ai.models.google import GoogleModel
     from pydantic_ai.providers.google import GoogleProvider
-    return GoogleModel(cfg.ai_model, provider=GoogleProvider(api_key=cfg.llm_api_key))
+    model_name = getattr(cfg, model_field)
+    return GoogleModel(model_name, provider=GoogleProvider(api_key=cfg.llm_api_key))
 
 
-def _build_groq(cfg):
+def _build_groq(cfg, *, model_field: str = "ai_model"):
     from groq import AsyncGroq
     from pydantic_ai.models.groq import GroqModel
     from pydantic_ai.providers.groq import GroqProvider
+    model_name = getattr(cfg, model_field)
     client = AsyncGroq(api_key=cfg.llm_api_key, max_retries=_MAX_RETRIES)
-    return GroqModel(cfg.ai_model, provider=GroqProvider(groq_client=client))
+    return GroqModel(model_name, provider=GroqProvider(groq_client=client))
 
 
-def _build_mistral(cfg):
+def _build_mistral(cfg, *, model_field: str = "ai_model"):
     from pydantic_ai.models.mistral import MistralModel
     from pydantic_ai.providers.mistral import MistralProvider
-    return MistralModel(cfg.ai_model, provider=MistralProvider(api_key=cfg.llm_api_key))
+    model_name = getattr(cfg, model_field)
+    return MistralModel(model_name, provider=MistralProvider(api_key=cfg.llm_api_key))
 
 
-def _build_cohere(cfg):
+def _build_cohere(cfg, *, model_field: str = "ai_model"):
     from pydantic_ai.models.cohere import CohereModel
     from pydantic_ai.providers.cohere import CohereProvider
-    return CohereModel(cfg.ai_model, provider=CohereProvider(api_key=cfg.llm_api_key))
+    model_name = getattr(cfg, model_field)
+    return CohereModel(model_name, provider=CohereProvider(api_key=cfg.llm_api_key))
 
 
-def _build_openai_compatible(cfg):
+def _build_openai_compatible(cfg, *, model_field: str = "ai_model"):
     if not cfg.llm_api_base:
         raise ValueError("LLM_API_BASE is required for the openai_compatible provider.")
     from pydantic_ai.models.openai import OpenAIModel
     from pydantic_ai.providers.openai import OpenAIProvider
-    return OpenAIModel(cfg.ai_model, provider=OpenAIProvider(
+    model_name = getattr(cfg, model_field)
+    return OpenAIModel(model_name, provider=OpenAIProvider(
         base_url=cfg.llm_api_base, api_key=cfg.llm_api_key,
     ))
 
@@ -153,22 +160,42 @@ _PROVIDER_BUILDERS: dict[str, Callable] = {
 
 # ── Model factory ────────────────────────────────────────────────────
 
-def _validated_site_config():
+def _validated_site_config(is_conversation: bool = False):
     """Load `SiteConfig` and assert the required LLM fields are populated."""
     from linkedin.models import SiteConfig
 
     cfg = SiteConfig.load()
     if not cfg.llm_api_key:
         raise ValueError("LLM_API_KEY is not set in Site Configuration.")
-    if not cfg.ai_model:
-        raise ValueError("AI_MODEL is not set in Site Configuration.")
+    model_field = "conversation_ai_model" if is_conversation else "ai_model"
+    model_val = getattr(cfg, model_field)
+    if not model_val:
+        raise ValueError(f"{model_field.upper()} is not set in Site Configuration.")
     return cfg
 
 
 def get_llm_model():
-    """Return a configured pydantic-ai `Model` for the current `SiteConfig`."""
-    cfg = _validated_site_config()
+    """Return a configured pydantic-ai `Model` for the current `SiteConfig`.
+
+    Uses the ``ai_model`` field — intended for all system LLM calls except
+    the conversation/follow-up agent.
+    """
+    cfg = _validated_site_config(is_conversation=False)
     builder = _PROVIDER_BUILDERS.get(cfg.llm_provider)
     if builder is None:
         raise ValueError(f"Unknown LLM provider: {cfg.llm_provider!r}")
-    return builder(cfg)
+    return builder(cfg, model_field="ai_model")
+
+
+def get_conversation_llm_model():
+    """Return a configured pydantic-ai `Model` for conversation/follow-up agent.
+
+    Uses the ``conversation_ai_model`` field from ``SiteConfig`` so the
+    follow-up agent can use a different (typically cheaper) model than the
+    rest of the system.
+    """
+    cfg = _validated_site_config(is_conversation=True)
+    builder = _PROVIDER_BUILDERS.get(cfg.llm_provider)
+    if builder is None:
+        raise ValueError(f"Unknown LLM provider: {cfg.llm_provider!r}")
+    return builder(cfg, model_field="conversation_ai_model")
