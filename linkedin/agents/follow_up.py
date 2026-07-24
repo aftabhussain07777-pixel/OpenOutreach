@@ -179,6 +179,49 @@ def _load_recent_messages(deal, limit: int = RECENT_MESSAGES_WINDOW) -> list:
     return list(reversed(list(qs)))
 
 
+def _resolve_prospect_name(deal, session) -> str:
+    """Get the prospect's full name, preferring cached DB fields.
+
+    First checks ``deal.lead.first_name`` / ``deal.lead.last_name`` (populated at
+    enrichment time or lazily backfilled on re-scrape). If those are empty (e.g.
+    legacy leads created before the fields existed), falls back to a Voyager
+    scrape which will backfill them for next time. Final fallback is the
+    LinkedIn public_identifier.
+    """
+    from django.db.models import Value as V
+    from django.db.models.functions import Concat, Trim
+
+    lead = deal.lead
+    first = (lead.first_name or "").strip()
+    last = (lead.last_name or "").strip()
+    if first and last:
+        return f"{first} {last}"
+    if first:
+        return first
+    if last:
+        return last
+
+    # No cached name — scrape once to backfill
+    try:
+        profile = lead.get_profile(session)
+        if profile:
+            first = (profile.get("first_name") or "").strip()
+            last = (profile.get("last_name") or "").strip()
+            full = f"{first} {last}".strip()
+            if full:
+                return full
+            if first:
+                return first
+            if last:
+                return last
+    except Exception:
+        logger.debug(
+            "Failed to resolve prospect name for %s, falling back to public_identifier",
+            lead.public_identifier,
+        )
+    return lead.public_identifier
+
+
 def _render_system_prompt(session, deal, recent_messages: list) -> str:
     """Render the agent system prompt from the Jinja2 template."""
     from django.utils import timezone
@@ -190,9 +233,12 @@ def _render_system_prompt(session, deal, recent_messages: list) -> str:
     self_prof = session.self_profile
     self_name = f"{self_prof.get('first_name', '')} {self_prof.get('last_name', '')}".strip() or session.django_user.username
 
+    prospect_name = _resolve_prospect_name(deal, session)
+
     now = timezone.now()
     return template.render(
         self_name=self_name,
+        prospect_name=prospect_name,
         contact_email=session.linkedin_profile.linkedin_username,
         product_docs=campaign.product_docs or "",
         campaign_objective=campaign.campaign_objective or "",

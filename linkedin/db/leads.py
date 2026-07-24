@@ -47,7 +47,15 @@ def create_enriched_lead(session, url: str, profile: Dict[str, Any]) -> Optional
             )
             return None
         industry = _extract_industry_name(profile)
-        lead = Lead.objects.create(linkedin_url=clean_url, public_identifier=public_id, industry=industry)
+        first_name = (profile.get("first_name") or "").strip()
+        last_name = (profile.get("last_name") or "").strip()
+        lead = Lead.objects.create(
+            linkedin_url=clean_url,
+            public_identifier=public_id,
+            industry=industry,
+            first_name=first_name,
+            last_name=last_name,
+        )
         _cache_urn_from_profile(lead, profile)
 
     lead.embed_from_profile(profile)

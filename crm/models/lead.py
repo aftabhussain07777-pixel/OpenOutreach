@@ -26,6 +26,8 @@ class Lead(models.Model):
     linkedin_url = models.URLField(max_length=200, unique=True)
     public_identifier = models.CharField(max_length=200, unique=True)
     urn = models.CharField(max_length=200, null=True, blank=True, unique=True, db_index=True)
+    first_name = models.CharField(max_length=100, blank=True, default="")
+    last_name = models.CharField(max_length=100, blank=True, default="")
     industry = models.CharField(max_length=200, blank=True, default="")
     embedding = models.BinaryField(null=True, blank=True)
     disqualified = models.BooleanField(default=False)
@@ -49,7 +51,8 @@ class Lead(models.Model):
         No DB caching: the heavy fields (raw JSON, names, company) live
         only in memory for as long as the caller holds the dict. We do
         opportunistically populate ``self.urn`` if it's still null and
-        the scrape returns one. Also lazily backfills ``self.industry``.
+        the scrape returns one. Also lazily backfills ``self.industry``
+        and ``self.first_name``/``self.last_name``.
         """
         from linkedin.api.client import PlaywrightLinkedinAPI
         from linkedin.exceptions import ProfileInaccessibleError
@@ -77,6 +80,19 @@ class Lead(models.Model):
             self.industry = industry
             self.save(update_fields=["industry"])
 
+        # Lazily backfill first_name / last_name on any re-scrape
+        first_name = (profile.get("first_name") or "").strip()
+        last_name = (profile.get("last_name") or "").strip()
+        fields_to_save = []
+        if first_name and self.first_name != first_name:
+            self.first_name = first_name
+            fields_to_save.append("first_name")
+        if last_name and self.last_name != last_name:
+            self.last_name = last_name
+            fields_to_save.append("last_name")
+        if fields_to_save:
+            self.save(update_fields=fields_to_save)
+
         return profile
 
     def get_urn(self, session) -> str:
@@ -101,7 +117,7 @@ class Lead(models.Model):
 
         Used by callers that already have a freshly parsed profile dict,
         so they can skip the scrape that ``get_embedding`` would trigger.
-        Also backfills industry from the profile dict.
+        Backfills industry, first_name, and last_name from the profile dict.
         """
         from linkedin.ml.embeddings import embed_text
         from linkedin.ml.profile_text import build_profile_text
@@ -115,6 +131,15 @@ class Lead(models.Model):
         if industry and self.industry != industry:
             self.industry = industry
             fields_to_save.append("industry")
+
+        first_name = (profile.get("first_name") or "").strip()
+        last_name = (profile.get("last_name") or "").strip()
+        if first_name and self.first_name != first_name:
+            self.first_name = first_name
+            fields_to_save.append("first_name")
+        if last_name and self.last_name != last_name:
+            self.last_name = last_name
+            fields_to_save.append("last_name")
 
         self.save(update_fields=fields_to_save)
 
