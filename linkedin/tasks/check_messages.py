@@ -216,6 +216,17 @@ def _handle_follow_up_nudge(session, deal, conv=None):
         return
 
     decision = run_follow_up_agent(session, deal)
+
+    # Persist agent decision fields on the deal for logging / analysis
+    deal.agent_user_states = decision.user_states.model_dump() if hasattr(decision, 'user_states') else None
+    deal.agent_objective_category = decision.objective_category or ""
+    deal.agent_objective = decision.objective or ""
+    deal.agent_reasoning_summary = decision.reasoning_summary or ""
+    deal.save(update_fields=[
+        "agent_user_states", "agent_objective_category",
+        "agent_objective", "agent_reasoning_summary",
+    ])
+
     profile = _build_send_profile(deal)
 
     if decision.action == "send_message":

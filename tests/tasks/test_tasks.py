@@ -6,7 +6,7 @@ import pytest
 from django.utils import timezone
 
 from crm.models import Deal
-from linkedin.agents.follow_up import FollowUpDecision
+from linkedin.agents.follow_up import FollowUpDecision, UserStates, RecipientState, ConversationState, RelationshipState, BusinessState
 from linkedin.db.deals import set_profile_state
 from linkedin.db.leads import create_enriched_lead, promote_lead_to_deal
 from linkedin.enums import ProfileState
@@ -271,19 +271,37 @@ class TestHandleCheckPending:
 
 
 @pytest.mark.django_db
+def _sample_user_states(**overrides):
+    """Build a default UserStates for tests."""
+    defaults = dict(
+        receipent_state=RecipientState(recognition=3, relevance=3, authenticity=3, cognitive_cost=3, commercial_intent=2),
+        conversation_state=ConversationState(topic="test", momentum="stable", engagement=3),
+        relationship_state=RelationshipState(familiarity=2, trust=2),
+        business_state=BusinessState(problem_evidence=2, urgency=2, willingness_to_change=2, opportunity=2),
+    )
+    defaults.update(overrides)
+    return UserStates(**defaults)
+
+
+_SAMPLE_USER_STATES = _sample_user_states()
+
+
 class TestHandleFollowUp:
     """Tests for the nudge logic now in ``_handle_follow_up_nudge``."""
 
-    @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
     @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.actions.message.send_raw_message", return_value=True)
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
-    def test_send_message_records_action(self, mock_agent, mock_send, mock_materialize, mock_sync, fake_session):
+    def test_send_message_records_action(self, mock_agent, mock_send, mock_sync, mock_materialize, fake_session):
         mock_agent.return_value = FollowUpDecision(
             action="send_message",
             message="Hello Alice!",
             follow_up_hours=72,
+            user_states=_SAMPLE_USER_STATES,
+            objective_category="rapport",
+            objective="Build initial rapport",
+            reasoning_summary="Lead seems open to conversation",
         )
         _make_connected(fake_session)
 
@@ -299,18 +317,22 @@ class TestHandleFollowUp:
         assert agent_deal.lead.public_identifier == "alice"
 
         mock_send.assert_called_once()
-        mock_sync.assert_called_once_with(fake_session, "alice")
+        mock_sync.assert_called_with(fake_session, "alice")
         assert ActionLog.objects.filter(action_type=ActionLog.ActionType.FOLLOW_UP).count() == 1
 
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
     @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.actions.message.send_raw_message", return_value=False)
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
-    def test_send_failure_resets_to_qualified(self, mock_agent, mock_send, mock_materialize, fake_session):
+    def test_send_failure_resets_to_qualified(self, mock_agent, mock_send, mock_sync, mock_materialize, fake_session):
         mock_agent.return_value = FollowUpDecision(
             action="send_message",
             message="Hi!",
             follow_up_hours=24,
+            user_states=_SAMPLE_USER_STATES,
+            objective_category="explore",
+            objective="Explore interest",
+            reasoning_summary="Quick check-in",
         )
         _make_connected(fake_session)
 
@@ -336,6 +358,10 @@ class TestHandleFollowUp:
             action="mark_completed",
             outcome="unresponsive",
             follow_up_hours=0,
+            user_states=_SAMPLE_USER_STATES,
+            objective_category="close",
+            objective="Close deal",
+            reasoning_summary="Lead not responding",
         )
         _make_connected(fake_session)
 
@@ -355,8 +381,15 @@ class TestHandleFollowUp:
     @patch("linkedin.db.summaries.materialize_profile_summary_if_missing")
     @patch("linkedin.db.chat.sync_conversation")
     @patch("linkedin.agents.follow_up.run_follow_up_agent")
-    def test_wait_bumps_update_date(self, mock_agent, mock_materialize, fake_session):
-        mock_agent.return_value = FollowUpDecision(action="wait", follow_up_hours=48)
+    def test_agent_decision_fields_are_saved(self, mock_agent, mock_sync, mock_materialize, fake_session):
+        mock_agent.return_value = FollowUpDecision(
+            action="wait",
+            follow_up_hours=48,
+            user_states=_SAMPLE_USER_STATES,
+            objective_category="understand",
+            objective="Wait and observe",
+            reasoning_summary="Lead needs more time",
+        )
         _make_connected(fake_session)
         deal_before = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
         original_update = deal_before.update_date
@@ -366,3 +399,9 @@ class TestHandleFollowUp:
 
         deal_after = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
         assert deal_after.update_date > original_update
+        # Verify new agent decision fields are persisted
+        assert deal_after.agent_user_states is not None
+        assert deal_after.agent_objective_category == "understand"
+        assert deal_after.agent_objective == "Wait and observe"
+        assert deal_after.agent_reasoning_summary == "Lead needs more time"
+        assert deal_after.agent_user_states["receipent_state"]["recognition"] == 3
