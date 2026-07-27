@@ -165,6 +165,11 @@ def _log_chat_facts(public_id: str, deal) -> None:
     logger.info("\n".join(lines))
 
 
+def _lead_has_replied(messages: list) -> bool:
+    """True if the lead has sent any incoming messages."""
+    return any(not m.is_outgoing for m in messages)
+
+
 def _load_recent_messages(deal, limit: int = RECENT_MESSAGES_WINDOW) -> list:
     """Last `limit` ChatMessages for `deal.lead`, in chronological order."""
     from chat.models import ChatMessage
@@ -223,11 +228,16 @@ def _resolve_prospect_name(deal, session) -> str:
 
 
 def _render_system_prompt(session, deal, recent_messages: list) -> str:
-    """Render the agent system prompt from the Jinja2 template."""
+    """Render the appropriate agent system prompt based on conversation state.
+
+    Uses ``outreach_agent.j2`` when the lead has not yet replied (no incoming
+    messages), and ``conversation_agent.j2`` once the lead has engaged.
+    """
     from django.utils import timezone
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
-    template = env.get_template("follow_up_agent.j2")
+    template_name = "conversation_agent.j2" if _lead_has_replied(recent_messages) else "outreach_agent.j2"
+    template = env.get_template(template_name)
 
     campaign = deal.campaign
     self_prof = session.self_profile
