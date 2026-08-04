@@ -23,11 +23,17 @@ FIXTURE_PAGES_DIR = FIXTURE_DIR / "pages"
 DUMP_PAGES = False
 
 # ----------------------------------------------------------------------
-# Telegram notifications (failure alerts to your phone)
+# Telegram notifications — general alerts (failures, task errors, etc.)
 # Leave blank to disable.
 # ----------------------------------------------------------------------
-TELEGRAM_BOT_TOKEN = "8887475264:AAE7l58sNh-hKAPnIqGv9mR2h_k6Bq8y2j8"
+TELEGRAM_BOT_TOKEN = "8887475264:AAE7l58sNh-hKAPnIqGv9mR2h_k6Bq8y2j8"  # @outreach_alerts_4464_bot
 TELEGRAM_CHAT_ID = "8901396168"
+
+# ----------------------------------------------------------------------
+# Telegram notifications — opportunity alerts only (human takeover)
+# ----------------------------------------------------------------------
+OPPORTUNITY_BOT_TOKEN = "8997123346:AAEw1PUiB5g0UXvNYW776bzQgEQHrxprQX4"  # @outreach_opportunity_bot
+OPPORTUNITY_CHAT_ID = "8901396168"
 
 MIN_DELAY = 5
 MAX_DELAY = 8

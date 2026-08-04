@@ -180,6 +180,14 @@ def _handle_follow_up_nudge(session, deal, conv=None):
         )
         return
 
+    # Human-takeover guard: opportunity detector flagged this deal
+    if deal.opportunity_flagged:
+        logger.info(
+            "[%s] check_messages nudge %s: flagged for human takeover — skipping",
+            campaign, public_id,
+        )
+        return
+
     # Max unanswered check
     if deal.unanswered_follow_up_count >= MAX_UNANSWERED_FOLLOW_UPS:
         logger.info(
@@ -469,12 +477,82 @@ def handle_check_messages(task, session, qualifiers):
             _stamp_next_follow_up(deal, delay_hours=7 * 24)  # 7d backoff
             continue
 
-        # Generate reply
-        from linkedin.actions.message import send_raw_message
-        from linkedin.agents.follow_up import run_follow_up_agent
-        from linkedin.agents.opportunity_detector import run_opportunity_detector, RecentMessage
+        # Human-takeover guard: if already flagged, don't auto-respond
+        if deal.opportunity_flagged:
+            logger.info(
+                "[%s] check_messages %s: flagged for human takeover — skipping auto-reply",
+                campaign, public_id,
+            )
+            continue
+
+        # ── Opportunity Detector (runs BEFORE the agent response) ──
+        # If it flags the new reply, a human takes over immediately and
+        # the agent does not send anything for this reply.
+        from linkedin.agents.opportunity_detector import (
+            run_opportunity_detector, RecentMessage,
+        )
+        from linkedin.models import SiteConfig
 
         materialize_profile_summary_if_missing(deal, session)
+        try:
+            recent_qs = (
+                ChatMessage.objects.filter(
+                    content_type=ct, object_id=deal.lead_id,
+                )
+                .order_by("-creation_date", "-pk")[:10]
+            )
+            recent_msgs = [
+                RecentMessage(
+                    content=m.content or "",
+                    is_outgoing=m.is_outgoing,
+                    timestamp=m.creation_date,
+                )
+                for m in reversed(list(recent_qs))
+            ]
+
+            assessment = run_opportunity_detector(
+                session, deal,
+                latest_reply=new_incoming.content or "",
+                recent_messages=recent_msgs,
+            )
+
+            deal.opportunity_assessment = assessment.model_dump()
+            threshold = SiteConfig.load().opportunity_score_threshold
+
+            if assessment.notify_recommended or assessment.opportunity_score >= threshold:
+                notify_opportunity(
+                    campaign=str(campaign),
+                    lead=public_id,
+                    opportunity_score=assessment.opportunity_score,
+                    threshold=threshold,
+                    notify_recommended=assessment.notify_recommended,
+                    opportunity_type=assessment.opportunity_type,
+                    summary=assessment.summary,
+                    evidence=assessment.evidence,
+                )
+                logger.info(
+                    "[%s] opportunity notification sent for %s "
+                    "(score=%.2f threshold=%.2f notify=%s) — human takeover",
+                    campaign, public_id,
+                    assessment.opportunity_score, threshold,
+                    assessment.notify_recommended,
+                )
+                deal.opportunity_flagged = True
+                deal.save(update_fields=["opportunity_assessment", "opportunity_flagged"])
+                continue  # human takeover — agent does NOT reply
+
+            deal.save(update_fields=["opportunity_assessment"])
+        except Exception:
+            logger.exception(
+                "[%s] opportunity detector failed for %s (best-effort) — "
+                "proceeding with agent reply",
+                campaign, public_id,
+            )
+
+        # Generate reply (only reached when not flagged)
+        from linkedin.actions.message import send_raw_message
+        from linkedin.agents.follow_up import run_follow_up_agent
+
         decision = run_follow_up_agent(session, deal)
 
         # Persist agent decision fields for logging / analysis
@@ -488,9 +566,6 @@ def handle_check_messages(task, session, qualifiers):
             "agent_objective", "agent_action_reason",
             "agent_conversation_summary",
         ])
-
-        # Capture latest_reply content before processing the decision
-        latest_reply_content = new_incoming.content or ""
 
         if decision.action == "send_message":
             profile = {
@@ -539,61 +614,6 @@ def handle_check_messages(task, session, qualifiers):
                     task_type="check_messages",
                     lead=public_id,
                 ))
-
-            # ── Opportunity Detector ────────────────────────────────────
-            # Run on every successfully sent reply to assess business potential
-            try:
-                recent_qs = (
-                    ChatMessage.objects.filter(
-                        content_type=ct, object_id=deal.lead_id,
-                    )
-                    .order_by("-creation_date", "-pk")[:10]
-                )
-                recent_msgs = [
-                    RecentMessage(
-                        content=m.content or "",
-                        is_outgoing=m.is_outgoing,
-                        timestamp=m.creation_date,
-                    )
-                    for m in reversed(list(recent_qs))
-                ]
-
-                assessment = run_opportunity_detector(
-                    session, deal,
-                    latest_reply=latest_reply_content,
-                    recent_messages=recent_msgs,
-                )
-
-                deal.opportunity_assessment = assessment.model_dump()
-                deal.save(update_fields=["opportunity_assessment"])
-
-                from linkedin.models import SiteConfig
-                config = SiteConfig.load()
-                threshold = config.opportunity_score_threshold
-
-                if assessment.notify_recommended or assessment.opportunity_score >= threshold:
-                    notify_opportunity(
-                        campaign=str(campaign),
-                        lead=public_id,
-                        opportunity_score=assessment.opportunity_score,
-                        threshold=threshold,
-                        notify_recommended=assessment.notify_recommended,
-                        opportunity_type=assessment.opportunity_type,
-                        summary=assessment.summary,
-                        evidence=assessment.evidence,
-                    )
-                    logger.info(
-                        "[%s] opportunity notification sent for %s "
-                        "(score=%.2f threshold=%.2f notify=%s)",
-                        campaign, public_id,
-                        assessment.opportunity_score, threshold,
-                        assessment.notify_recommended,
-                    )
-            except Exception:
-                logger.exception(
-                    "[%s] opportunity detector failed for %s (best-effort)",
-                    campaign, public_id,
-                )
 
         elif decision.action == "mark_completed":
             set_profile_state(

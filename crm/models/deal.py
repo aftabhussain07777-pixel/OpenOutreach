@@ -77,6 +77,11 @@ class Deal(models.Model):
         null=True, blank=True, default=None,
         help_text="Last opportunity detector assessment (OpportunityAssessment)",
     )
+    opportunity_flagged = models.BooleanField(
+        default=False,
+        help_text="Set when the opportunity detector triggered a notification — "
+                  "human takeover in progress, agent auto-replies are paused",
+    )
     creation_date = models.DateTimeField(default=timezone.now)
     update_date = models.DateTimeField(auto_now=True)
 

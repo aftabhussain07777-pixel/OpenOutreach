@@ -9,7 +9,12 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass
 
-from linkedin.conf import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+from linkedin.conf import (
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_CHAT_ID,
+    OPPORTUNITY_BOT_TOKEN,
+    OPPORTUNITY_CHAT_ID,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,18 +29,27 @@ class FailureEvent:
     lead: str | None = None
 
 
-def send_telegram(message: str) -> bool:
-    """Send a plain-text message to the configured Telegram chat.
+def send_telegram(
+    message: str,
+    *,
+    bot_token: str | None = None,
+    chat_id: str | None = None,
+) -> bool:
+    """Send a plain-text message to a Telegram chat.
 
-    Returns ``True`` on success, ``False`` on failure (logged).
-    This is best-effort — never raises.
+    Defaults to the general alert bot (``TELEGRAM_BOT_TOKEN`` / ``TELEGRAM_CHAT_ID``).
+    Pass ``bot_token``/``chat_id`` to send via a different bot (e.g. the
+    opportunity bot). Returns ``True`` on success, ``False`` on failure
+    (logged). Best-effort — never raises.
     """
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+    token = bot_token or TELEGRAM_BOT_TOKEN
+    chat = chat_id or TELEGRAM_CHAT_ID
+    if not token or not chat:
         return False
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = json.dumps({
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat,
         "text": message,
         "parse_mode": "HTML",
     }).encode()
@@ -81,8 +95,8 @@ def notify_opportunity(
 
     parts = [
         "\U0001f680 <b>Opportunity Detected</b>",
-        f"\U0001f4e6 Campaign: {campaign}",
-        f"\U0001f464 Lead: {lead}",
+        f"\U0001f4e6 <b>Campaign:</b> {campaign}",
+        f"\U0001f464 <b>Lead:</b> {lead}",
         "",
         f"\U0001f3af Opportunity Score: <b>{opportunity_score:.2f}</b> (threshold: {threshold})",
         f"\U0001f4ac Notify Recommended: {'Yes' if notify_recommended else 'No'}",
@@ -100,8 +114,11 @@ def notify_opportunity(
         if len(evidence) > 5:
             parts.append(f"  (+{len(evidence) - 5} more)")
 
-    return send_telegram("\n".join(parts))
-
+    return send_telegram(
+        "\n".join(parts),
+        bot_token=OPPORTUNITY_BOT_TOKEN,
+        chat_id=OPPORTUNITY_CHAT_ID,
+    )
 
 
 def notify_failure(event: FailureEvent) -> bool:
