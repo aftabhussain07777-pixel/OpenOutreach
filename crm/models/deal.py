@@ -55,7 +55,7 @@ class Deal(models.Model):
     chat_summary = models.JSONField(null=True, blank=True, default=None)
     agent_user_states = models.JSONField(
         null=True, blank=True, default=None,
-        help_text="Last agent user states (RecipientState, ConversationState, RelationshipState, BusinessState)",
+        help_text="Last agent user states (RecipientState, ConversationState, RelationshipState, BeliefState)",
     )
     agent_objective_category = models.CharField(
         max_length=20, blank=True, default="",
@@ -65,9 +65,17 @@ class Deal(models.Model):
         blank=True, default="",
         help_text="Last agent objective description",
     )
-    agent_reasoning_summary = models.TextField(
+    agent_action_reason = models.TextField(
         blank=True, default="",
-        help_text="Last agent reasoning summary",
+        help_text="Last agent action reason",
+    )
+    agent_conversation_summary = models.TextField(
+        blank=True, default="",
+        help_text="Last agent conversation summary",
+    )
+    opportunity_assessment = models.JSONField(
+        null=True, blank=True, default=None,
+        help_text="Last opportunity detector assessment (OpportunityAssessment)",
     )
     creation_date = models.DateTimeField(default=timezone.now)
     update_date = models.DateTimeField(auto_now=True)

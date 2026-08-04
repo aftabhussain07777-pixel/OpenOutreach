@@ -6,7 +6,7 @@ import pytest
 from django.utils import timezone
 
 from crm.models import Deal
-from linkedin.agents.follow_up import FollowUpDecision, UserStates, RecipientState, ConversationState, RelationshipState, BusinessState
+from linkedin.agents.follow_up import FollowUpDecision, ConversationStateSnapshot, RecipientState, ConversationState, RelationshipState, BeliefState, Objective
 from linkedin.db.deals import set_profile_state
 from linkedin.db.leads import create_enriched_lead, promote_lead_to_deal
 from linkedin.enums import ProfileState
@@ -272,15 +272,15 @@ class TestHandleCheckPending:
 
 @pytest.mark.django_db
 def _sample_user_states(**overrides):
-    """Build a default UserStates for tests."""
+    """Build a default ConversationStateSnapshot for tests."""
     defaults = dict(
-        receipent_state=RecipientState(recognition=3, relevance=3, authenticity=3, cognitive_cost=3, commercial_intent=2),
-        conversation_state=ConversationState(topic="test", momentum="stable", engagement=3),
-        relationship_state=RelationshipState(familiarity=2, trust=2),
-        business_state=BusinessState(problem_evidence=2, urgency=2, willingness_to_change=2, opportunity=2),
+        recipient=RecipientState(recognition=3, authenticity=3, relevance=3, cognitive_effort=3, conversation_willingness=3),
+        conversation=ConversationState(topic="test", momentum="stable", engagement=3),
+        relationship=RelationshipState(familiarity=2, comfort=2, trust=2),
+        belief=BeliefState(about_self="", about_them="", about_our_connection="", shared_interests="", about_me=""),
     )
     defaults.update(overrides)
-    return UserStates(**defaults)
+    return ConversationStateSnapshot(**defaults)
 
 
 _SAMPLE_USER_STATES = _sample_user_states()
@@ -299,9 +299,9 @@ class TestHandleFollowUp:
             message="Hello Alice!",
             follow_up_hours=72,
             user_states=_SAMPLE_USER_STATES,
-            objective_category="rapport",
-            objective="Build initial rapport",
-            reasoning_summary="Lead seems open to conversation",
+            objective=Objective(category="acknowledge", description="Build initial rapport"),
+            conversation_summary="First touch point",
+            action_reason="Lead seems open to conversation",
         )
         _make_connected(fake_session)
 
@@ -330,9 +330,9 @@ class TestHandleFollowUp:
             message="Hi!",
             follow_up_hours=24,
             user_states=_SAMPLE_USER_STATES,
-            objective_category="explore",
-            objective="Explore interest",
-            reasoning_summary="Quick check-in",
+            objective=Objective(category="continue", description="Explore interest"),
+            conversation_summary="Quick check-in",
+            action_reason="Quick check-in",
         )
         _make_connected(fake_session)
 
@@ -359,9 +359,9 @@ class TestHandleFollowUp:
             outcome="unresponsive",
             follow_up_hours=0,
             user_states=_SAMPLE_USER_STATES,
-            objective_category="close",
-            objective="Close deal",
-            reasoning_summary="Lead not responding",
+            objective=Objective(category="wrap_up", description="Close deal"),
+            conversation_summary="Lead stopped responding",
+            action_reason="Lead not responding",
         )
         _make_connected(fake_session)
 
@@ -386,9 +386,9 @@ class TestHandleFollowUp:
             action="wait",
             follow_up_hours=48,
             user_states=_SAMPLE_USER_STATES,
-            objective_category="understand",
-            objective="Wait and observe",
-            reasoning_summary="Lead needs more time",
+            objective=Objective(category="understand", description="Wait and observe"),
+            conversation_summary="Lead is evaluating",
+            action_reason="Lead needs more time",
         )
         _make_connected(fake_session)
         deal_before = Deal.objects.get(lead__public_identifier="alice", campaign=fake_session.campaign)
@@ -403,5 +403,6 @@ class TestHandleFollowUp:
         assert deal_after.agent_user_states is not None
         assert deal_after.agent_objective_category == "understand"
         assert deal_after.agent_objective == "Wait and observe"
-        assert deal_after.agent_reasoning_summary == "Lead needs more time"
-        assert deal_after.agent_user_states["receipent_state"]["recognition"] == 3
+        assert deal_after.agent_action_reason == "Lead needs more time"
+        assert deal_after.agent_conversation_summary == "Lead is evaluating"
+        assert deal_after.agent_user_states["recipient"]["recognition"] == 3

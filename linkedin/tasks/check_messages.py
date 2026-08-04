@@ -26,7 +26,7 @@ from termcolor import colored
 
 from chat.models import ChatMessage
 from linkedin.enums import ProfileState
-from linkedin.notification import FailureEvent, notify_failure
+from linkedin.notification import FailureEvent, notify_failure, notify_opportunity
 from linkedin.tasks.follow_up import (
     MAX_UNANSWERED_FOLLOW_UPS,
     MIN_DAYS_PER_UNANSWERED,
@@ -218,13 +218,15 @@ def _handle_follow_up_nudge(session, deal, conv=None):
     decision = run_follow_up_agent(session, deal)
 
     # Persist agent decision fields on the deal for logging / analysis
-    deal.agent_user_states = decision.user_states.model_dump() if hasattr(decision, 'user_states') else None
-    deal.agent_objective_category = decision.objective_category or ""
-    deal.agent_objective = decision.objective or ""
-    deal.agent_reasoning_summary = decision.reasoning_summary or ""
+    deal.agent_user_states = decision.user_states.model_dump()
+    deal.agent_objective_category = decision.objective.category
+    deal.agent_objective = decision.objective.description
+    deal.agent_action_reason = decision.action_reason
+    deal.agent_conversation_summary = decision.conversation_summary
     deal.save(update_fields=[
         "agent_user_states", "agent_objective_category",
-        "agent_objective", "agent_reasoning_summary",
+        "agent_objective", "agent_action_reason",
+        "agent_conversation_summary",
     ])
 
     profile = _build_send_profile(deal)
@@ -470,9 +472,25 @@ def handle_check_messages(task, session, qualifiers):
         # Generate reply
         from linkedin.actions.message import send_raw_message
         from linkedin.agents.follow_up import run_follow_up_agent
+        from linkedin.agents.opportunity_detector import run_opportunity_detector, RecentMessage
 
         materialize_profile_summary_if_missing(deal, session)
         decision = run_follow_up_agent(session, deal)
+
+        # Persist agent decision fields for logging / analysis
+        deal.agent_user_states = decision.user_states.model_dump()
+        deal.agent_objective_category = decision.objective.category
+        deal.agent_objective = decision.objective.description
+        deal.agent_action_reason = decision.action_reason
+        deal.agent_conversation_summary = decision.conversation_summary
+        deal.save(update_fields=[
+            "agent_user_states", "agent_objective_category",
+            "agent_objective", "agent_action_reason",
+            "agent_conversation_summary",
+        ])
+
+        # Capture latest_reply content before processing the decision
+        latest_reply_content = new_incoming.content or ""
 
         if decision.action == "send_message":
             profile = {
@@ -521,6 +539,61 @@ def handle_check_messages(task, session, qualifiers):
                     task_type="check_messages",
                     lead=public_id,
                 ))
+
+            # ── Opportunity Detector ────────────────────────────────────
+            # Run on every successfully sent reply to assess business potential
+            try:
+                recent_qs = (
+                    ChatMessage.objects.filter(
+                        content_type=ct, object_id=deal.lead_id,
+                    )
+                    .order_by("-creation_date", "-pk")[:10]
+                )
+                recent_msgs = [
+                    RecentMessage(
+                        content=m.content or "",
+                        is_outgoing=m.is_outgoing,
+                        timestamp=m.creation_date,
+                    )
+                    for m in reversed(list(recent_qs))
+                ]
+
+                assessment = run_opportunity_detector(
+                    session, deal,
+                    latest_reply=latest_reply_content,
+                    recent_messages=recent_msgs,
+                )
+
+                deal.opportunity_assessment = assessment.model_dump()
+                deal.save(update_fields=["opportunity_assessment"])
+
+                from linkedin.models import SiteConfig
+                config = SiteConfig.load()
+                threshold = config.opportunity_score_threshold
+
+                if assessment.notify_recommended or assessment.opportunity_score >= threshold:
+                    notify_opportunity(
+                        campaign=str(campaign),
+                        lead=public_id,
+                        opportunity_score=assessment.opportunity_score,
+                        threshold=threshold,
+                        notify_recommended=assessment.notify_recommended,
+                        opportunity_type=assessment.opportunity_type,
+                        summary=assessment.summary,
+                        evidence=assessment.evidence,
+                    )
+                    logger.info(
+                        "[%s] opportunity notification sent for %s "
+                        "(score=%.2f threshold=%.2f notify=%s)",
+                        campaign, public_id,
+                        assessment.opportunity_score, threshold,
+                        assessment.notify_recommended,
+                    )
+            except Exception:
+                logger.exception(
+                    "[%s] opportunity detector failed for %s (best-effort)",
+                    campaign, public_id,
+                )
 
         elif decision.action == "mark_completed":
             set_profile_state(

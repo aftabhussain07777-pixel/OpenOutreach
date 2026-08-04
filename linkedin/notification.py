@@ -58,6 +58,52 @@ def send_telegram(message: str) -> bool:
         return False
 
 
+def notify_opportunity(
+    campaign: str,
+    lead: str,
+    opportunity_score: float,
+    threshold: float,
+    notify_recommended: bool,
+    opportunity_type: str,
+    summary: str,
+    evidence: list[str],
+) -> bool:
+    """Send an opportunity alert notification via Telegram.
+
+    Triggered when an opportunity assessment exceeds the configured threshold
+    or when ``notify_recommended`` is true.
+    """
+    reasons = []
+    if notify_recommended:
+        reasons.append("Agent recommended human attention")
+    if opportunity_score >= threshold:
+        reasons.append(f"Opportunity score {opportunity_score:.2f} ≥ threshold {threshold}")
+
+    parts = [
+        "\U0001f680 <b>Opportunity Detected</b>",
+        f"\U0001f4e6 Campaign: {campaign}",
+        f"\U0001f464 Lead: {lead}",
+        "",
+        f"\U0001f3af Opportunity Score: <b>{opportunity_score:.2f}</b> (threshold: {threshold})",
+        f"\U0001f4ac Notify Recommended: {'Yes' if notify_recommended else 'No'}",
+        f"\u26a1 Triggered: {' | '.join(reasons)}",
+        "",
+        f"\U0001f4cb Type: {opportunity_type}",
+        f"\U0001f4dd Summary: {summary}",
+    ]
+
+    if evidence:
+        parts.append("")
+        parts.append("\U0001f50d Evidence:")
+        for e in evidence[:5]:  # limit to 5 evidence items
+            parts.append(f"  \u2022 {e}")
+        if len(evidence) > 5:
+            parts.append(f"  (+{len(evidence) - 5} more)")
+
+    return send_telegram("\n".join(parts))
+
+
+
 def notify_failure(event: FailureEvent) -> bool:
     """Format and send a failure notification to Telegram.
 

@@ -1,0 +1,45 @@
+============================================================
+Unanswered Follow-up Sweep (cumulative)
+============================================================
+
+Scenario: Alex Chen
+Role: VP of Operations
+Company: MediFlow Health
+
+Max unanswered before close: 3
+
+Initial Outreach Message:
+  "I noticed MediFlow has been investing heavily in patient intake. Those operational improvements rarely get much attention, but they usually have the biggest impact."
+
+The prospect never replied.
+
+============================================================
+3 days without a reply
+============================================================
+
+  Action: send_message
+  Objective: continue — Share a low-effort industry observation to stay on the recipient's radar without asking for a response
+  Message: - Saw a community hospital cut intake time about 30% after simplifying registration forms.
+- Small operational tweaks like that often cascade into fewer scheduling conflicts and billing errors.
+  Action Reason: Respectful, low-friction follow-up that aligns with the recipient's interests and communication style
+  Conversation Summary: Initial short observation about MediFlow investing in patient intake was sent 3 days ago; no reply. Plan to send a brief, value-neutral industry observation.
+
+============================================================
+7 days without a reply
+============================================================
+
+  Action: send_message
+  Objective: continue — Send a brief observational follow-up that requires no reply and keeps the relationship warm.
+  Message: Ran into another operations leader who said scheduling has become everyone's problem and nobody's job. Made me think about how small intake changes can free up scheduler time and reduce billing follow-up.
+  Action Reason: A short, non-intrusive observation aligns with Alex's communication style and priorities; keeps the conversation alive without asking for anything.
+  Conversation Summary: Sent two short messages four days ago about patient intake improvements and intake simplification; no reply yet.
+
+============================================================
+10 days without a reply
+============================================================
+
+  Action: mark_completed
+  Objective: wrap_up — Conversation closed
+  Outcome: unresponsive
+  Action Reason: Unanswered count (3) reached max 3 — deal marked COMPLETED, no further message
+  Conversation Summary: 3 unanswered message(s) — no reply received

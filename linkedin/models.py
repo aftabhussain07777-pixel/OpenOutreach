@@ -38,6 +38,10 @@ class SiteConfig(models.Model):
     ai_model = models.CharField(max_length=200, blank=True, default="gpt-5-nano")
     conversation_ai_model = models.CharField(max_length=200, blank=True, default="gpt-5-mini")
     llm_api_base = models.CharField(max_length=500, blank=True, default="")
+    opportunity_score_threshold = models.FloatField(
+        default=0.8,
+        help_text="Minimum opportunity score to trigger a notification (0.0 - 1.0).",
+    )
 
     class Meta:
         app_label = "linkedin"

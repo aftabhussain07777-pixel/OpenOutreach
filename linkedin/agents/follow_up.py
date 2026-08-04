@@ -7,6 +7,7 @@ The handler in tasks/follow_up.py executes the decision.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -19,39 +20,57 @@ from linkedin.llm import get_conversation_llm_model, run_agent_sync
 
 logger = logging.getLogger(__name__)
 
-
 class RecipientState(BaseModel):
     recognition: int = Field(ge=1, le=5)
-    relevance: int = Field(ge=1, le=5)
     authenticity: int = Field(ge=1, le=5)
-    cognitive_cost: int = Field(ge=1, le=5)
-    commercial_intent: int = Field(ge=1, le=5)
+    relevance: int = Field(ge=1, le=5)
+    cognitive_effort: int = Field(ge=1, le=5)
+    conversation_willingness: int = Field(ge=1, le=5)
 
 
 class ConversationState(BaseModel):
     topic: str
-    momentum: Literal["building", "stable", "fading", "looping"]
+    momentum: Literal[
+        "building",
+        "stable",
+        "fading",
+        "looping",
+    ]
     engagement: int = Field(ge=1, le=5)
 
 
 class RelationshipState(BaseModel):
     familiarity: int = Field(ge=1, le=5)
+    comfort: int = Field(ge=1, le=5)
     trust: int = Field(ge=1, le=5)
 
 
-class BusinessState(BaseModel):
-    problem_evidence: int = Field(ge=1, le=5)
-    urgency: int = Field(ge=1, le=5)
-    willingness_to_change: int = Field(ge=1, le=5)
-    opportunity: int = Field(ge=1, le=5)
-
-class UserStates(BaseModel):
-    receipent_state: RecipientState
-    conversation_state: ConversationState
-    relationship_state: RelationshipState
-    business_state: BusinessState
+class BeliefState(BaseModel):
+    about_self: str
+    about_them: str
+    about_our_connection: str
+    shared_interests: str
+    about_me: str
 
 
+class ConversationStateSnapshot(BaseModel):
+    recipient: RecipientState
+    conversation: ConversationState
+    relationship: RelationshipState
+    belief: BeliefState
+
+class Objective(BaseModel):
+    category: Literal[
+        "acknowledge",
+        "understand",
+        "continue",
+        "clarify",
+        "share",
+        "answer",
+        "wrap_up",
+        "other",
+    ]
+    description: str
 
 class FollowUpDecision(BaseModel):
     """Structured output from the follow-up agent."""
@@ -73,19 +92,11 @@ class FollowUpDecision(BaseModel):
     follow_up_hours: float = Field(
         description="Hours until next follow-up. Always required — you decide the pace.",
     )
-    user_states: UserStates
-    objective_category: Literal[
-        "understand",
-        "rapport",
-        "explore",
-        "educate",
-        "business",
-        "meeting",
-        "close",
-        "other",
-    ]
-    objective: str
-    reasoning_summary: str
+    user_states: ConversationStateSnapshot
+    objective: Objective
+    conversation_summary: str
+    action_reason: str
+
 
     @model_validator(mode="after")
     def _check_required_fields(self):
@@ -168,6 +179,18 @@ def _log_chat_facts(public_id: str, deal) -> None:
 def _lead_has_replied(messages: list) -> bool:
     """True if the lead has sent any incoming messages."""
     return any(not m.is_outgoing for m in messages)
+
+
+def _strip_dashes(text: str | None) -> str | None:
+    """Remove em/en dashes the LLM produces despite the prompt rule.
+
+    The prompt instructs the model to never use "—" or "–", but models
+    still emit them. This is a deterministic post-process: the dash and any
+    surrounding whitespace are collapsed to a single space.
+    """
+    if not text:
+        return text
+    return re.sub(r"\s*[\u2014\u2013]\s*", " ", text).strip()
 
 
 def _load_recent_messages(deal, limit: int = RECENT_MESSAGES_WINDOW) -> list:
@@ -287,6 +310,10 @@ def run_follow_up_agent(session, deal) -> FollowUpDecision:
     decision = run_agent_sync(agent.run(system_prompt)).output
     if decision is None:
         raise RuntimeError(f"LLM returned unparseable response for follow-up of {public_id}")
+
+    # Sanitize the message — strip em/en dashes programmatically since
+    # the prompt-level rule is unreliable.
+    decision.message = _strip_dashes(decision.message)
 
     logger.info("follow_up agent for %s: %s", public_id, decision.action)
     return decision

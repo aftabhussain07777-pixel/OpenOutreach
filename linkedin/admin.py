@@ -9,7 +9,7 @@ from crm.models import Deal
 
 @admin.register(SiteConfig)
 class SiteConfigAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "llm_provider", "ai_model", "conversation_ai_model", "llm_api_base")
+    list_display = ("__str__", "llm_provider", "ai_model", "conversation_ai_model", "llm_api_base", "opportunity_score_threshold")
 
     def has_add_permission(self, request):
         return not SiteConfig.objects.exists()
