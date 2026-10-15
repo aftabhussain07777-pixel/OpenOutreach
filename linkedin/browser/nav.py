@@ -80,6 +80,20 @@ def resolve_locator(page, candidates, timeout_per_ms: int = 5000):
 
 
 TOP_CARD_SELECTORS = [
+    # New LinkedIn SDUI profile (2026): obfuscated hv4* classes, no
+    # pv-top-card / artdeco-card markers. The top card renders as a
+    # wrapper div whose id/componentkey ends in "Topcard", e.g.
+    # div#com.linkedin.sdui.profile.card.refACoAAA...Topcard.
+    # NOTE: the inner <section> carries a random UUID componentkey, so
+    # matching section[componentkey*=...] misses — match the wrapper div.
+    'div[id*="com.linkedin.sdui.profile.card."][id*="Topcard"]',
+    'div[componentkey*="com.linkedin.sdui.profile.card."][componentkey*="Topcard"]',
+    'div[id*="Topcard"]',
+    'div[componentkey*="Topcard"]',
+    # Semantic fallbacks (immune to obfuscated classes/ids): only the
+    # top card links to the contact-info overlay and holds the profile h2.
+    'section:has(a[href*="overlay/contact-info"])',
+    # Legacy markers (pre-SDUI) — kept for old fixtures/snapshots.
     'section:has(div.top-card-background-hero-image)',
     'section[data-member-id]',
     'section.artdeco-card:has(> div.pv-top-card)',
