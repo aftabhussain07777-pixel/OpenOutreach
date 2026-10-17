@@ -1,8 +1,10 @@
+import logging
 import signal
 
 from django.core.management.base import BaseCommand
 
 from linkedin.browser.login import launch_browser, log_exit_ip
+from linkedin.logging import configure_logging
 
 LINKEDIN_SIGNUP_URL = "https://www.linkedin.com/signup"
 
@@ -27,6 +29,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         save_state = options["save_state"]
+        configure_logging(level=logging.INFO)
 
         page, context, browser, playwright = launch_browser()
         try:

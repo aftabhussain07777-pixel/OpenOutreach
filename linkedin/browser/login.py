@@ -162,14 +162,17 @@ def _context_options(storage_state=None) -> dict:
 def log_exit_ip(page) -> None:
     """Fetch and log the live egress IP of the browser context.
 
-    Always logged so IP changes can be correlated with LinkedIn
-    challenges. When ``EXPECTED_EXIT_IP`` is set (static-IP instances),
-    a mismatch — or an unverifiable IP — is a hard failure.
+    Uses a throwaway page: LinkedIn's CSP blocks in-page ``fetch()`` to
+    third-party hosts. Always logged so IP changes can be correlated
+    with LinkedIn challenges. When ``EXPECTED_EXIT_IP`` is set
+    (static-IP instances), a mismatch — or an unverifiable IP — is a
+    hard failure.
     """
+    probe = None
     try:
-        actual = page.evaluate(
-            "fetch('https://api.ipify.org').then(r => r.text())"
-        ).strip()
+        probe = page.context.new_page()
+        probe.goto("https://api.ipify.org", wait_until="domcontentloaded")
+        actual = probe.inner_text("body").strip()
     except Exception as e:
         if EXPECTED_EXIT_IP:
             raise RuntimeError(
@@ -177,6 +180,9 @@ def log_exit_ip(page) -> None:
             ) from e
         logger.warning("Could not determine exit IP: %s", e)
         return
+    finally:
+        if probe:
+            probe.close()
     logger.info("Exit IP: %s", actual)
     if EXPECTED_EXIT_IP and actual != EXPECTED_EXIT_IP:
         raise RuntimeError(
