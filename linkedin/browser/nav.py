@@ -3,7 +3,7 @@ import logging
 import random
 from urllib.parse import unquote, urlparse, urljoin
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from linkedin.conf import BROWSER_NAV_TIMEOUT_MS, DUMP_PAGES, FIXTURE_PAGES_DIR, HUMAN_TYPE_MIN_DELAY_MS, HUMAN_TYPE_MAX_DELAY_MS
 from linkedin.exceptions import SkipProfile

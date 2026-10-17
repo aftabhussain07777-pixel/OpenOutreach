@@ -2,8 +2,8 @@
 import logging
 from typing import Any, Dict
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import Locator
+from patchright.sync_api import Error as PlaywrightError
+from patchright.sync_api import Locator
 
 from linkedin.browser.nav import dump_page_html, goto_page, human_type
 

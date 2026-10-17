@@ -59,7 +59,7 @@ class ColoredFormatter(logging.Formatter):
 # ── Public API ──────────────────────────────────────────────────────
 
 SILENCED_LOGGERS = (
-    "urllib3", "httpx", "pydantic_ai", "openai", "playwright",
+    "urllib3", "httpx", "pydantic_ai", "openai", "patchright",
     "httpcore", "fastembed", "huggingface_hub", "filelock", "asyncio",
 )
 

@@ -1,10 +1,10 @@
 # linkedin/browser/login.py
 import logging
+import shutil
 from urllib.parse import unquote, urlsplit
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import sync_playwright
 from termcolor import colored
 
 from linkedin.browser.nav import goto_page, human_type, resolve_locator
@@ -14,11 +14,9 @@ from linkedin.conf import (
     BROWSER_DEFAULT_TIMEOUT_MS,
     BROWSER_LOCALE,
     BROWSER_LOGIN_TIMEOUT_MS,
+    BROWSER_PROFILE_DIR,
     BROWSER_SLOW_MO,
     BROWSER_TIMEZONE_ID,
-    BROWSER_USER_AGENT,
-    BROWSER_VIEWPORT_HEIGHT,
-    BROWSER_VIEWPORT_WIDTH,
     EXPECTED_EXIT_IP,
     PROXY_BYPASS,
     PROXY_URL,
@@ -142,20 +140,25 @@ def _proxy_config() -> dict | None:
     return proxy
 
 
-def _context_options(storage_state=None) -> dict:
-    """Pinned browser-context options: proxy + stable fingerprint."""
+def _launch_options() -> dict:
+    """Pinned persistent-context options: proxy + stable fingerprint.
+
+    Patchright best practice: real Google Chrome, persistent profile,
+    no user-supplied user-agent or viewport (``no_viewport`` follows the
+    actual Xvfb window).
+    """
     options: dict = {
-        "viewport": {"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+        "user_data_dir": str(BROWSER_PROFILE_DIR),
+        "channel": "chrome",
+        "headless": False,
+        "no_viewport": True,
+        "slow_mo": BROWSER_SLOW_MO,
         "locale": BROWSER_LOCALE,
         "timezone_id": BROWSER_TIMEZONE_ID or ACTIVE_TIMEZONE,
     }
-    if storage_state:
-        options["storage_state"] = storage_state
     proxy = _proxy_config()
     if proxy:
         options["proxy"] = proxy
-    if BROWSER_USER_AGENT:
-        options["user_agent"] = BROWSER_USER_AGENT
     return options
 
 
@@ -191,11 +194,51 @@ def log_exit_ip(page) -> None:
         )
 
 
+_SINGLETON_FILES = ("SingletonLock", "SingletonSocket", "SingletonCookie")
+
+_COOKIE_FIELDS = frozenset({
+    "name", "value", "url", "domain", "path",
+    "expires", "httpOnly", "secure", "sameSite",
+})
+
+
+def _prepare_profile_dir() -> None:
+    """Create the persistent profile dir and clear stale singleton locks."""
+    BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    for name in _SINGLETON_FILES:
+        (BROWSER_PROFILE_DIR / name).unlink(missing_ok=True)
+
+
+def reset_browser_profile() -> None:
+    """Delete the persistent Chrome profile (forces a fresh login)."""
+    shutil.rmtree(BROWSER_PROFILE_DIR, ignore_errors=True)
+
+
+def _has_auth_cookie(context) -> bool:
+    return any(
+        c.get("name") == "li_at" and c.get("value")
+        for c in context.cookies()
+    )
+
+
+def _seed_cookies(context, storage_state: dict) -> None:
+    """Copy DB-persisted cookies into a profile without a LinkedIn session."""
+    if _has_auth_cookie(context):
+        return
+    cookies = [
+        {k: v for k, v in cookie.items() if k in _COOKIE_FIELDS}
+        for cookie in storage_state.get("cookies") or []
+    ]
+    if cookies:
+        context.add_cookies(cookies)
+        logger.info("Seeded %d saved cookies into the profile", len(cookies))
+
+
 def launch_browser(storage_state=None):
-    logger.debug("Launching Playwright")
+    logger.debug("Launching Patchright")
+    _prepare_profile_dir()
     playwright = sync_playwright().start()
-    browser = playwright.chromium.launch(headless=False, slow_mo=BROWSER_SLOW_MO)
-    options = _context_options(storage_state)
+    options = _launch_options()
     if "proxy" in options:
         logger.info(
             "Routing browser through proxy %s (tz=%s locale=%s)",
@@ -203,14 +246,15 @@ def launch_browser(storage_state=None):
             options["timezone_id"],
             options["locale"],
         )
-    context = browser.new_context(**options)
+    context = playwright.chromium.launch_persistent_context(**options)
+    if storage_state:
+        _seed_cookies(context, storage_state)
     if BROWSER_BLOCKED_RESOURCE_TYPES:
         context.route("**/*", _block_heavy_resources)
     context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
-    Stealth().apply_stealth_sync(context)
-    page = context.new_page()
-    return page, context, browser, playwright
+    page = context.pages[0] if context.pages else context.new_page()
+    return page, context, context.browser, playwright
 
 
 def _block_heavy_resources(route):
@@ -235,18 +279,12 @@ def start_browser_session(session: "AccountSession"):
 
     session.linkedin_profile.refresh_from_db(fields=["cookie_data"])
     cookie_data = session.linkedin_profile.cookie_data
-
     storage_state = cookie_data if cookie_data else None
-    if storage_state:
-        logger.info("Loading saved session for %s", session)
 
     session.page, session.context, session.browser, session.playwright = launch_browser(storage_state=storage_state)
 
-    if not storage_state:
-        playwright_login(session)
-        _save_cookies(session)
-        logger.info(colored("Login successful – session saved", "green", attrs=["bold"]))
-    else:
+    if _has_auth_cookie(session.context):
+        logger.info("Resuming saved session for %s", session)
         session.page.goto(LINKEDIN_FEED_URL)
         dismiss_comply_gate(session.page)
         goto_page(
@@ -256,6 +294,10 @@ def start_browser_session(session: "AccountSession"):
             timeout=BROWSER_DEFAULT_TIMEOUT_MS,
             error_message="Saved session invalid",
         )
+    else:
+        playwright_login(session)
+        _save_cookies(session)
+        logger.info(colored("Login successful – session saved", "green", attrs=["bold"]))
 
     # "domcontentloaded" — "load" waits for every subresource (analytics
     # beacons, lazy media) and on LinkedIn that event may never fire,

@@ -15,10 +15,10 @@ FROM python:3.12-slim-bookworm AS runtime
 COPY --from=deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
 
-# Install Playwright Chromium to a shared path accessible by any user
+# Install Patchright's Google Chrome (+ system deps) for any user
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
 ENV EDITOR=nano
-RUN playwright install --with-deps chromium
+RUN patchright install --with-deps chrome
 
 # VNC stack (started conditionally via ENABLE_VNC=true at runtime)
 RUN apt-get update \

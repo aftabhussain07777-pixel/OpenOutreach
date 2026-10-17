@@ -1,7 +1,7 @@
 # tests/browser/conftest.py
-"""Playwright fixtures for testing selectors against saved HTML pages."""
+"""Patchright fixtures for testing selectors against saved HTML pages."""
 import pytest
-from playwright.sync_api import sync_playwright
+from patchright.sync_api import sync_playwright
 
 from linkedin.conf import FIXTURE_PAGES_DIR
 
@@ -9,7 +9,7 @@ from linkedin.conf import FIXTURE_PAGES_DIR
 @pytest.fixture(scope="session")
 def browser():
     with sync_playwright() as pw:
-        b = pw.chromium.launch(headless=True)
+        b = pw.chromium.launch(channel="chrome", headless=True)
         yield b
         b.close()
 

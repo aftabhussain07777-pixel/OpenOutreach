@@ -2,7 +2,7 @@
 import logging
 from typing import Any, Dict
 
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+from patchright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from linkedin.browser.nav import dump_page_html, find_top_card
 from linkedin.enums import ProfileState

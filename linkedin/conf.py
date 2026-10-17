@@ -75,17 +75,21 @@ EXPECTED_EXIT_IP = os.environ.get("EXPECTED_EXIT_IP", "").strip()
 # ----------------------------------------------------------------------
 # Browser fingerprint pinning (anti-detection).
 # Every instance pins a stable fingerprint matching its proxy geo, so
-# LinkedIn never sees TZ/locale/viewport drift between restarts.
+# LinkedIn never sees TZ/locale drift between restarts. No custom
+# user-agent or viewport injection (Patchright best practice) — the
+# persistent Chrome profile follows the real 1920x1080 Xvfb window.
 # BROWSER_TIMEZONE_ID defaults to "" (= follow ACTIVE_TIMEZONE);
 # set it explicitly per instance, e.g. America/New_York.
-# BROWSER_USER_AGENT defaults to "" (= Playwright's bundled Chromium
-# UA); set it once per instance and never change it afterwards.
+# BROWSER_PROFILE_DIR is the persistent Chrome profile per account
+# instance; keep it on the mounted data volume so the session (cookies,
+# cache, history) survives container restarts.
 # ----------------------------------------------------------------------
 BROWSER_TIMEZONE_ID = os.environ.get("BROWSER_TIMEZONE_ID", "").strip()
 BROWSER_LOCALE = os.environ.get("BROWSER_LOCALE", "en-US").strip() or "en-US"
-BROWSER_VIEWPORT_WIDTH = int(os.environ.get("BROWSER_VIEWPORT_WIDTH", "1920"))
-BROWSER_VIEWPORT_HEIGHT = int(os.environ.get("BROWSER_VIEWPORT_HEIGHT", "1080"))
-BROWSER_USER_AGENT = os.environ.get("BROWSER_USER_AGENT", "").strip()
+BROWSER_PROFILE_DIR = Path(
+    os.environ.get("BROWSER_PROFILE_DIR", "").strip()
+    or (ROOT_DIR / "data" / "browser-profile")
+)
 
 # ----------------------------------------------------------------------
 # Onboarding defaults (shown to user during interactive setup)

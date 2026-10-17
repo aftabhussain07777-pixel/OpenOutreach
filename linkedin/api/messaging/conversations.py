@@ -3,7 +3,7 @@
 
 import logging
 
-from playwright._impl._errors import Error as PlaywrightError
+from patchright.sync_api import Error as PlaywrightError
 from tenacity import (
     retry,
     retry_if_exception_type,

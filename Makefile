@@ -8,8 +8,8 @@ install: ## install all Python dependencies (local dev)
 	pip install uv 2>/dev/null || true
 	uv pip install -r requirements/local.txt
 
-setup: install ## install deps + Playwright browsers + migrate + bootstrap CRM
-	playwright install --with-deps chromium
+setup: install ## install deps + Patchright Chrome + migrate + bootstrap CRM
+	patchright install --with-deps chrome
 	python manage.py migrate --no-input
 	python manage.py setup_crm
 

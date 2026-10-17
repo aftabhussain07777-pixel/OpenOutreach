@@ -37,7 +37,7 @@ The system gets smarter with every decision. It starts by exploring broadly, the
 **Why choose OpenOutreach?**
 
 - 🧠 **Autonomous lead discovery** — No contact lists needed; AI finds your ideal customers
-- 🛡️ **Undetectable** — Playwright + stealth plugins mimic real user behavior
+- 🛡️ **Undetectable** — Patchright (patched Playwright) + real Chrome profile mimic genuine browser behavior
 - 💾 **Self-hosted + full data ownership** — Everything runs locally, browse your CRM in a web UI
 - 🐳 **One-command setup** — Dockerized deployment, interactive onboarding
 - ✨ **AI-powered messaging** — LLM-generated personalized outreach (bring your own model)
@@ -161,7 +161,7 @@ Then open:
 | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 🧠 **Autonomous Lead Discovery**  | No contact lists needed — LLM generates search queries from your product description and campaign objective.                                                  |
 | 🎯 **Bayesian Active Learning**   | Gaussian Process model on profile embeddings learns your ideal customer via explore/exploit, selecting the most informative candidates for LLM qualification. |
-| 🤖 **Stealth Browser Automation** | Playwright + stealth plugins mimic real user behavior for undetectable interactions.                                                                          |
+| 🤖 **Stealth Browser Automation** | Patchright (patched Playwright) with a real Chrome profile mimics genuine browser behavior for undetectable interactions.                                      |
 | 🛡️ **Voyager API Scraping**       | Uses LinkedIn's internal API for accurate, structured profile data (no fragile HTML parsing).                                                                 |
 | 🔄 **Stateful Pipeline**          | Tracks profile states (`QUALIFIED` → `READY_TO_CONNECT` → `PENDING` → `CONNECTED` → `COMPLETED`) in a local DB — fully resumable.                             |
 | ⏱️ **Smart Rate Limiting**        | Configurable daily/weekly limits per action type, respects LinkedIn's own limits automatically.                                                               |

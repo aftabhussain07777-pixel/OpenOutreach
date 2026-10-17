@@ -28,7 +28,7 @@ class AccountSession:
         # Active campaign — set by the daemon before each lane execution
         self.campaign = None
 
-        # Playwright objects – created on first access or after crash
+        # Browser objects – created on first access or after crash
         self.page = None
         self.context = None
         self.browser = None
@@ -68,24 +68,23 @@ class AccountSession:
         self.page.wait_for_load_state("domcontentloaded")
 
     def reauthenticate(self):
-        """Force a fresh login: close browser, clear saved cookies, re-launch."""
-        from linkedin.browser.login import start_browser_session
+        """Force a fresh login: close browser, wipe profile + cookies, re-launch."""
+        from linkedin.browser.login import reset_browser_profile, start_browser_session
 
         logger.warning("Re-authenticating %s — clearing saved session", self)
         self.close()
+        reset_browser_profile()
         self.linkedin_profile.cookie_data = None
         self.linkedin_profile.save(update_fields=["cookie_data"])
         start_browser_session(session=self)
 
     def _maybe_refresh_cookies(self):
-        """Re-login if the li_at auth cookie in the saved DB state is expired."""
+        """Re-login if the li_at auth cookie in the live profile is expired."""
         from linkedin.browser.login import start_browser_session
 
-        self.linkedin_profile.refresh_from_db(fields=["cookie_data"])
-        cookie_data = self.linkedin_profile.cookie_data
-        if not cookie_data:
+        if not self.context:
             return
-        for cookie in cookie_data.get("cookies", []):
+        for cookie in self.context.cookies():
             if cookie.get("name") == _AUTH_COOKIE_NAME:
                 expires = cookie.get("expires", -1)
                 if expires > 0 and expires < time.time():
