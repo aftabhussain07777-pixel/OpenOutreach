@@ -1,6 +1,7 @@
 # linkedin/conf.py
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from linkedin.tz_detect import system_timezone
@@ -45,8 +46,38 @@ BROWSER_SLOW_MO = 200
 BROWSER_DEFAULT_TIMEOUT_MS = 30_000
 BROWSER_LOGIN_TIMEOUT_MS = 40_000
 BROWSER_NAV_TIMEOUT_MS = 10_000
+BROWSER_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media"})
 HUMAN_TYPE_MIN_DELAY_MS = 50
 HUMAN_TYPE_MAX_DELAY_MS = 200
+
+# ----------------------------------------------------------------------
+# Per-instance egress proxy (residential IP per LinkedIn account).
+# Set PROXY_URL to route the whole Chromium context through it, e.g.
+#   PROXY_URL=http://user:pass@gw.dataimpulse.com:10000
+# Empty = direct connection (local dev default). PROXY_BYPASS is an
+# optional comma-separated list of hosts that skip the proxy.
+# EXPECTED_EXIT_IP is an optional fail-fast guard: when set,
+# start_browser_session() verifies the live exit IP and crashes on
+# mismatch instead of running the account on the wrong IP.
+# ----------------------------------------------------------------------
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()
+PROXY_BYPASS = os.environ.get("PROXY_BYPASS", "").strip()
+EXPECTED_EXIT_IP = os.environ.get("EXPECTED_EXIT_IP", "").strip()
+
+# ----------------------------------------------------------------------
+# Browser fingerprint pinning (anti-detection).
+# Every instance pins a stable fingerprint matching its proxy geo, so
+# LinkedIn never sees TZ/locale/viewport drift between restarts.
+# BROWSER_TIMEZONE_ID defaults to "" (= follow ACTIVE_TIMEZONE);
+# set it explicitly per instance, e.g. America/New_York.
+# BROWSER_USER_AGENT defaults to "" (= Playwright's bundled Chromium
+# UA); set it once per instance and never change it afterwards.
+# ----------------------------------------------------------------------
+BROWSER_TIMEZONE_ID = os.environ.get("BROWSER_TIMEZONE_ID", "").strip()
+BROWSER_LOCALE = os.environ.get("BROWSER_LOCALE", "en-US").strip() or "en-US"
+BROWSER_VIEWPORT_WIDTH = int(os.environ.get("BROWSER_VIEWPORT_WIDTH", "1920"))
+BROWSER_VIEWPORT_HEIGHT = int(os.environ.get("BROWSER_VIEWPORT_HEIGHT", "1080"))
+BROWSER_USER_AGENT = os.environ.get("BROWSER_USER_AGENT", "").strip()
 
 # ----------------------------------------------------------------------
 # Onboarding defaults (shown to user during interactive setup)

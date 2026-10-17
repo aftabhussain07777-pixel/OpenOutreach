@@ -8,9 +8,19 @@ from termcolor import colored
 
 from linkedin.browser.nav import goto_page, human_type, resolve_locator
 from linkedin.conf import (
+    ACTIVE_TIMEZONE,
+    BROWSER_BLOCKED_RESOURCE_TYPES,
     BROWSER_DEFAULT_TIMEOUT_MS,
+    BROWSER_LOCALE,
     BROWSER_LOGIN_TIMEOUT_MS,
     BROWSER_SLOW_MO,
+    BROWSER_TIMEZONE_ID,
+    BROWSER_USER_AGENT,
+    BROWSER_VIEWPORT_HEIGHT,
+    BROWSER_VIEWPORT_WIDTH,
+    EXPECTED_EXIT_IP,
+    PROXY_BYPASS,
+    PROXY_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,16 +105,98 @@ def playwright_login(session: "AccountSession"):
     )
 
 
+def _redacted_proxy(server: str) -> str:
+    """Proxy URL with credentials masked for logs (never print the password)."""
+    try:
+        scheme, rest = server.split("://", 1)
+        if "@" in rest:
+            _creds, host = rest.rsplit("@", 1)
+            return f"{scheme}://***@{host}"
+        return server
+    except ValueError:
+        return "***"
+
+
+def _proxy_config() -> dict | None:
+    """Playwright ``proxy`` dict from env, or None for direct connection."""
+    if not PROXY_URL:
+        return None
+    proxy: dict = {"server": PROXY_URL}
+    if PROXY_BYPASS:
+        proxy["bypass"] = PROXY_BYPASS
+    return proxy
+
+
+def _context_options(storage_state=None) -> dict:
+    """Pinned browser-context options: proxy + stable fingerprint."""
+    options: dict = {
+        "viewport": {"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
+        "locale": BROWSER_LOCALE,
+        "timezone_id": BROWSER_TIMEZONE_ID or ACTIVE_TIMEZONE,
+    }
+    if storage_state:
+        options["storage_state"] = storage_state
+    proxy = _proxy_config()
+    if proxy:
+        options["proxy"] = proxy
+    if BROWSER_USER_AGENT:
+        options["user_agent"] = BROWSER_USER_AGENT
+    return options
+
+
+def log_exit_ip(page) -> None:
+    """Fetch and log the live egress IP of the browser context.
+
+    Always logged so IP changes can be correlated with LinkedIn
+    challenges. When ``EXPECTED_EXIT_IP`` is set (static-IP instances),
+    a mismatch — or an unverifiable IP — is a hard failure.
+    """
+    try:
+        actual = page.evaluate(
+            "fetch('https://api.ipify.org').then(r => r.text())"
+        ).strip()
+    except Exception as e:
+        if EXPECTED_EXIT_IP:
+            raise RuntimeError(
+                f"Exit-IP check failed (expected {EXPECTED_EXIT_IP}): {e}"
+            ) from e
+        logger.warning("Could not determine exit IP: %s", e)
+        return
+    logger.info("Exit IP: %s", actual)
+    if EXPECTED_EXIT_IP and actual != EXPECTED_EXIT_IP:
+        raise RuntimeError(
+            f"Exit-IP mismatch: expected {EXPECTED_EXIT_IP}, got {actual}. "
+            "Refusing to run the account on the wrong IP."
+        )
+
+
 def launch_browser(storage_state=None):
     logger.debug("Launching Playwright")
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(headless=False, slow_mo=BROWSER_SLOW_MO)
-    context = browser.new_context(storage_state=storage_state)
+    options = _context_options(storage_state)
+    if "proxy" in options:
+        logger.info(
+            "Routing browser through proxy %s (tz=%s locale=%s)",
+            _redacted_proxy(PROXY_URL),
+            options["timezone_id"],
+            options["locale"],
+        )
+    context = browser.new_context(**options)
+    context.route("**/*", _block_heavy_resources)
     context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     Stealth().apply_stealth_sync(context)
     page = context.new_page()
     return page, context, browser, playwright
+
+
+def _block_heavy_resources(route):
+    """Abort image/video requests — DOM + Voyager XHRs are unaffected."""
+    if route.request.resource_type in BROWSER_BLOCKED_RESOURCE_TYPES:
+        route.abort()
+    else:
+        route.continue_()
 
 
 def _save_cookies(session):
@@ -145,6 +237,7 @@ def start_browser_session(session: "AccountSession"):
     # beacons, lazy media) and on LinkedIn that event may never fire,
     # hanging the daemon for the duration of the BROWSER_DEFAULT_TIMEOUT.
     session.page.wait_for_load_state("domcontentloaded")
+    log_exit_ip(session.page)
     logger.info(colored("Browser ready", "green", attrs=["bold"]))
 
 
