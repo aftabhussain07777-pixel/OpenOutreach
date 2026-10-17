@@ -1,5 +1,6 @@
 # linkedin/browser/login.py
 import logging
+from urllib.parse import unquote, urlsplit
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -118,10 +119,24 @@ def _redacted_proxy(server: str) -> str:
 
 
 def _proxy_config() -> dict | None:
-    """Playwright ``proxy`` dict from env, or None for direct connection."""
+    """Playwright ``proxy`` dict from env, or None for direct connection.
+
+    Credentials are passed as separate ``username``/``password`` fields —
+    Chromium ignores credentials embedded in the ``server`` URL and fails
+    with ``ERR_INVALID_AUTH_CREDENTIALS`` on the proxy's 407 challenge.
+    """
     if not PROXY_URL:
         return None
-    proxy: dict = {"server": PROXY_URL}
+    parts = urlsplit(PROXY_URL)
+    if not parts.hostname:
+        parts = urlsplit("http://" + PROXY_URL)
+    server = f"{parts.scheme}://{parts.hostname}"
+    if parts.port:
+        server += f":{parts.port}"
+    proxy: dict = {"server": server}
+    if parts.username:
+        proxy["username"] = unquote(parts.username)
+        proxy["password"] = unquote(parts.password or "")
     if PROXY_BYPASS:
         proxy["bypass"] = PROXY_BYPASS
     return proxy
