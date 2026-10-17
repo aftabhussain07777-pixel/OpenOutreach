@@ -46,7 +46,15 @@ BROWSER_SLOW_MO = 200
 BROWSER_DEFAULT_TIMEOUT_MS = 30_000
 BROWSER_LOGIN_TIMEOUT_MS = 40_000
 BROWSER_NAV_TIMEOUT_MS = 10_000
-BROWSER_BLOCKED_RESOURCE_TYPES = frozenset({"image", "media"})
+# Comma-separated resource types to abort. Set BROWSER_BLOCKED_RESOURCE_TYPES
+# to "" to load everything (required for CAPTCHA/signup over VNC — reCAPTCHA
+# is drawn with images) or e.g. "media" to allow images but still block
+# video/audio.
+BROWSER_BLOCKED_RESOURCE_TYPES = frozenset(
+    t.strip()
+    for t in os.environ.get("BROWSER_BLOCKED_RESOURCE_TYPES", "image,media").split(",")
+    if t.strip()
+)
 HUMAN_TYPE_MIN_DELAY_MS = 50
 HUMAN_TYPE_MAX_DELAY_MS = 200
 

@@ -204,7 +204,8 @@ def launch_browser(storage_state=None):
             options["locale"],
         )
     context = browser.new_context(**options)
-    context.route("**/*", _block_heavy_resources)
+    if BROWSER_BLOCKED_RESOURCE_TYPES:
+        context.route("**/*", _block_heavy_resources)
     context.set_default_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     context.set_default_navigation_timeout(BROWSER_DEFAULT_TIMEOUT_MS)
     Stealth().apply_stealth_sync(context)
@@ -213,7 +214,9 @@ def launch_browser(storage_state=None):
 
 
 def _block_heavy_resources(route):
-    """Abort image/video requests — DOM + Voyager XHRs are unaffected."""
+    """Abort configured resource types (default image/media) — DOM + Voyager
+    XHRs are unaffected. Disabled entirely when
+    BROWSER_BLOCKED_RESOURCE_TYPES is empty (manual/CAPTCHA sessions)."""
     if route.request.resource_type in BROWSER_BLOCKED_RESOURCE_TYPES:
         route.abort()
     else:
