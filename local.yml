@@ -14,7 +14,23 @@ services:
       - ENABLE_VNC=true
       - HOST_UID=${HOST_UID:-1000}
       - HOST_GID=${HOST_GID:-1000}
+      # Daemon OR manual-browser mode (see compose/linkedin/start).
+      - MODE=${MODE:-daemon}
+      # Timezone pinning: ActivityScheduler active hours, Xvfb/Cr containers,
+      # BROWSER_TIMEZONE_ID follow TZ when unset.
+      - TZ=${TZ:-}
+      # Per-instance egress proxy (residential/static ISP IP).
+      - PROXY_URL=${PROXY_URL:-}
+      - PROXY_BYPASS=${PROXY_BYPASS:-}
+      - EXPECTED_EXIT_IP=${EXPECTED_EXIT_IP:-}
+      # Browser fingerprint pinning.
+      - BROWSER_TIMEZONE_ID=${BROWSER_TIMEZONE_ID:-}
+      - BROWSER_LOCALE=${BROWSER_LOCALE:-}
+      # ${VAR-default} (no colon) = default applies when unset only, so an
+      # explicitly empty value (manual/CAPTCHA mode) still disables blocking.
+      - BROWSER_BLOCKED_RESOURCE_TYPES=${BROWSER_BLOCKED_RESOURCE_TYPES-image,media}
     volumes:
       - .:/app
+    # noVNC + x11vnc (-nopw) — must stay loopback-only; access via SSH tunnel.
     ports:
-      - "6080:6080"
+      - "127.0.0.1:6080:6080"

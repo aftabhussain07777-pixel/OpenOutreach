@@ -18,7 +18,7 @@ Startup sequence:
 6. **Newsletter** — GDPR override + `ensure_newsletter_subscription()` (marker-guarded, runs once).
 7. **Run** — `run_daemon(session)`.
 
-Docker `start` script handles only Xvfb/VNC setup, then `exec python manage.py rundaemon "$@"`.
+Docker `start` script handles only Xvfb/VNC setup, then executes either mode: `MODE=daemon` (default) → `exec python manage.py rundaemon "$@"`; `MODE=manual` → Xvfb + VNC + `manual_browser` with all its arguments forwarded (no daemon, VNC always on in manual mode) — used for signup/login/warmup validation on a VPS.
 
 ### Other management commands
 
@@ -154,7 +154,7 @@ Three apps in `INSTALLED_APPS`:
 
 ## Docker
 
-Base image: `python:3.12-slim-bookworm` (deps + runtime stages). VNC on port 5900. `BUILD_ENV` arg selects requirements. Dockerfile at `compose/linkedin/Dockerfile`. Install: uv pip → DjangoCRM `--no-deps` → requirements → `patchright install --with-deps chrome`.
+Base image: `python:3.12-slim-bookworm` (deps + runtime stages). VNC: x11vnc on 5900 inside the container, noVNC published on `127.0.0.1:6080` (SSH tunnel access only — x11vnc runs `-nopw`). `BUILD_ENV` arg selects requirements. `local.yml` passes runtime config in via compose interpolation (`MODE`, `TZ`, `PROXY_URL`, `PROXY_BYPASS`, `EXPECTED_EXIT_IP`, `BROWSER_TIMEZONE_ID`, `BROWSER_LOCALE`, `BROWSER_BLOCKED_RESOURCE_TYPES` — unset → `image,media` default; explicitly empty → blocking disabled). Dockerfile at `compose/linkedin/Dockerfile`. Install: uv pip → DjangoCRM `--no-deps` → requirements → `patchright install --with-deps chrome`.
 
 ## CI/CD
 
