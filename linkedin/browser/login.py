@@ -155,6 +155,7 @@ def _launch_options() -> dict:
         "slow_mo": BROWSER_SLOW_MO,
         "locale": BROWSER_LOCALE,
         "timezone_id": BROWSER_TIMEZONE_ID or ACTIVE_TIMEZONE,
+        "args": ["--force-webrtc-ip-handling-policy=disable_non_proxied_udp"],
     }
     proxy = _proxy_config()
     if proxy:
