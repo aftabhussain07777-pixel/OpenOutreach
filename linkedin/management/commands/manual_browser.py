@@ -1,3 +1,4 @@
+import json
 import logging
 import signal
 
@@ -26,12 +27,31 @@ class Command(BaseCommand):
             default="",
             help="Write Playwright storage_state JSON (cookies) here on exit.",
         )
+        parser.add_argument(
+            "--load-state",
+            default="",
+            help="Seed cookies into a fresh profile from a Playwright storage_state JSON file.",
+        )
 
     def handle(self, *args, **options):
         save_state = options["save_state"]
+        load_state = options["load_state"]
         configure_logging(level=logging.INFO)
 
-        page, context, browser, playwright = launch_browser()
+        storage_state = None
+        if load_state:
+            with open(load_state, encoding="utf-8") as fh:
+                storage_state = json.load(fh)
+            cookies = storage_state.get("cookies") or []
+            has_li_at = any(c.get("name") == "li_at" and c.get("value") for c in cookies)
+            self.stdout.write(
+                f"Load-state: {len(cookies)} cookies, "
+                f"li_at {'present' if has_li_at else 'MISSING'}"
+            )
+            if not has_li_at:
+                self.stdout.write(self.style.WARNING("No li_at — expect a fresh login."))
+
+        page, context, browser, playwright = launch_browser(storage_state=storage_state)
         try:
             page.goto(options["url"], wait_until="domcontentloaded")
             log_exit_ip(page)

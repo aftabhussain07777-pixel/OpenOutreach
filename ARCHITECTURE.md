@@ -25,7 +25,7 @@ Docker `start` script handles only Xvfb/VNC setup, then executes either mode: `M
 - `onboard` — standalone onboarding (interactive or `--non-interactive` with `--config-file` / individual flags).
 - `setup_crm` — idempotent CRM bootstrap (default Site).
 - `add_seeds` — add seed LinkedIn profile URLs to a campaign.
-- `manual_browser` — launch a proxy-configured browser (pinned fingerprint) for manual work over VNC — account signup, warmup browsing. No DB access, safe before onboarding. `--save-state PATH` writes Playwright `storage_state` (cookies) to disk on exit (SIGTERM/SIGINT safe) so the session can be imported into `LinkedInProfile.cookie_data` afterwards.
+- `manual_browser` — launch a proxy-configured browser (pinned fingerprint) for manual work over VNC — account signup, warmup browsing. No DB access, safe before onboarding. `--save-state PATH` writes Playwright `storage_state` (cookies) to disk on exit (SIGTERM/SIGINT safe) so the session can be imported into `LinkedInProfile.cookie_data` afterwards. `--load-state PATH` seeds cookies from a storage_state file into a fresh profile before navigation (seeding is skipped if the profile already holds `li_at`); the usual flow is cookie-import day — copy the file into `data/`, run `manual_browser --url https://www.linkedin.com/feed --load-state /app/data/<file>.json`, and the saved session resumes on the feed.
 
 ## Onboarding (`onboarding.py`)
 
