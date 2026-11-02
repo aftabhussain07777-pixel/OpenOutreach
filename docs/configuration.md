@@ -3,18 +3,20 @@
 Configuration is split between environment variables (`.env` file), Django models (managed via interactive
 onboarding or Django Admin), and hardcoded defaults in `linkedin/conf.py`.
 
-## LLM Configuration (`.env`)
+## LLM Configuration (Database)
 
-LLM settings are stored in `.env` (project root). Any
-OpenAI-compatible provider works. These are prompted during interactive onboarding if missing.
+LLM settings live in the `SiteConfig` DB singleton, set once during interactive onboarding (or
+afterwards via Django Admin). Legacy `.env`-only LLM setups are imported once by migration
+`linkedin.0003`, which deletes the `.env` file **only if it holds purely LLM keys** — a `.env`
+with operational keys (proxy, exit-IP guard, timezone, …) is left untouched.
 
-| Variable       | Description                                                                   | Default    |
-| :------------- | :---------------------------------------------------------------------------- | :--------- |
-| `LLM_API_KEY`  | API key for an OpenAI-compatible provider.                                    | (required) |
-| `AI_MODEL`     | Model identifier for qualification, follow-up, and search keyword generation. | (required) |
-| `LLM_API_BASE` | Base URL for the API endpoint.                                                | (none)     |
-
-These can also be set as environment variables directly.
+| Key (SiteConfig)     | Description                                                                   | Default     |
+| :------------------- | :---------------------------------------------------------------------------- | :---------- |
+| `llm_provider`       | Provider: `openai` (default), `anthropic`, `google`, `groq`, `mistral`, `cohere`, `openai_compatible`. | `openai` |
+| `llm_api_key`        | API key for the chosen provider.                                              | (required)  |
+| `ai_model`           | Model identifier for qualification, follow-up, and search keyword generation. | (required)  |
+| `conversation_ai_model` | Model used exclusively by the follow-up agent.                             | `gpt-5-mini`|
+| `llm_api_base`       | Base URL (only for `openai_compatible`).                                      | (none)      |
 
 ## Campaign Settings (Django Model)
 

@@ -15,8 +15,14 @@ def _parse_env(text):
     return values
 
 
+_LLM_ENV_KEYS = frozenset({"LLM_API_KEY", "AI_MODEL", "LLM_API_BASE"})
+
+
 def migrate_env_to_db(apps, schema_editor):
-    """Read LLM config from .env, store in SiteConfig, then delete .env."""
+    """Store LLM keys from a pure-LLM .env in SiteConfig, then delete it.
+
+    A .env holding operational keys (proxy, exit-IP guard, timezone, …)
+    is left untouched — it stays env-driven and must never be removed."""
     SiteConfig = apps.get_model("linkedin", "SiteConfig")
 
     env_file = Path(__file__).resolve().parent.parent.parent / ".env"
@@ -24,6 +30,8 @@ def migrate_env_to_db(apps, schema_editor):
         return
 
     values = _parse_env(env_file.read_text(encoding="utf-8"))
+    if any(key not in _LLM_ENV_KEYS for key in values):
+        return
 
     SiteConfig.objects.update_or_create(pk=1, defaults={
         "llm_api_key": values.get("LLM_API_KEY", ""),

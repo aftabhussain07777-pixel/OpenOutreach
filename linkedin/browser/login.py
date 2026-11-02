@@ -10,6 +10,7 @@ from termcolor import colored
 from linkedin.browser.nav import goto_page, human_type, resolve_locator
 from linkedin.conf import (
     ACTIVE_TIMEZONE,
+    ALLOW_DIRECT_EGRESS,
     BROWSER_BLOCKED_RESOURCE_TYPES,
     BROWSER_DEFAULT_TIMEOUT_MS,
     BROWSER_LOCALE,
@@ -236,6 +237,13 @@ def _seed_cookies(context, storage_state: dict) -> None:
 
 
 def launch_browser(storage_state=None):
+    proxy = _proxy_config()
+    if not proxy and not ALLOW_DIRECT_EGRESS:
+        raise RuntimeError(
+            "PROXY_URL is unset — refusing to boot a LinkedIn session with "
+            "direct egress (the VPS IP would touch LinkedIn). Set "
+            "ALLOW_DIRECT_EGRESS=1 to override for local development."
+        )
     logger.debug("Launching Patchright")
     _prepare_profile_dir()
     playwright = sync_playwright().start()

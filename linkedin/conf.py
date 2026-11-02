@@ -71,6 +71,10 @@ HUMAN_TYPE_MAX_DELAY_MS = 200
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()
 PROXY_BYPASS = os.environ.get("PROXY_BYPASS", "").strip()
 EXPECTED_EXIT_IP = os.environ.get("EXPECTED_EXIT_IP", "").strip()
+# False = launch_browser() refuses to boot a LinkedIn session without a
+# proxy (fail-fast against silent direct-egress from a VPS IP). Set to 1
+# only for local development where direct egress is acceptable.
+ALLOW_DIRECT_EGRESS = os.environ.get("ALLOW_DIRECT_EGRESS", "").strip() == "1"
 
 # ----------------------------------------------------------------------
 # Browser fingerprint pinning (anti-detection).
