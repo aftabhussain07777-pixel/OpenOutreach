@@ -36,6 +36,9 @@ MODE=manual docker compose -f local.yml run --rm --service-ports app /start --ur
 # Seed cookies from a storage_state file into a fresh profile (cookie-import day)
 python manage.py manual_browser --url https://www.linkedin.com/feed --load-state /app/data/y_state.json
 
+# Import-day DB cleanup after cloning a local DB onto a fresh instance (idempotent; aborts if clone is missing)
+python manage.py postclone_setup --dry-run
+
 # Industry stats
 python manage.py industry_stats                    # all campaigns
 python manage.py industry_stats --campaign "Name"  # single campaign
